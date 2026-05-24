@@ -2,13 +2,13 @@
 
 ## Installation
 
-### Why build from source instead of using the COPR package?
+### Why not use the COPR howdy package?
 
-The COPR howdy package depends on `pam_python.so`, which requires Python 2.7. Fedora 40+ only ships Python 3.x, making the COPR package uninstallable. Building from source produces a native C++ PAM module with no Python 2 dependency.
+The COPR howdy package depends on `pam_python.so`, which requires `libpython2.7`. Fedora 44 removed Python 2.7 entirely, making the COPR package uninstallable. This script instead installs howdy v2.6.1's Python files directly and uses `pam_exec.so` — a standard PAM module bundled with every Linux system — to invoke howdy's `compare.py` during authentication. No Python 2, no compilation required.
 
 ### How long does installation take?
 
-About 10–15 minutes on a typical system. Most of the time is spent compiling dlib (if not already installed) and howdy.
+About 5–15 minutes on a typical system. Most of the time is spent compiling dlib via pip (if not already installed) and downloading the face recognition model files (~27 MB). The howdy installation itself is just a file copy with no compilation step.
 
 ### Can I use this on other distributions?
 
@@ -76,7 +76,7 @@ sudo systemctl restart gdm
 
 ### Can I require both face AND password?
 
-Yes, but it requires manual PAM configuration. Change `sufficient` to `required` in the PAM files, and add another `required` module for password. This makes face recognition an additional factor rather than a replacement.
+Yes, but it requires manual PAM configuration. Replace the `[success=end default=ignore]` control flag with `required` in the howdy PAM lines, and ensure a password module is also `required`. This makes face recognition an additional factor rather than a replacement.
 
 ### How do I temporarily disable face recognition?
 
@@ -127,14 +127,21 @@ sudo ./install-howdy.sh --fix
 
 ### "Data files have not been downloaded"
 
-The face recognition neural network models are missing:
+The face recognition neural network models are missing. Run the auto-fixer, which will re-download them:
 
 ```bash
-cd /usr/share/dlib-data
-sudo ./install.sh
+sudo ./install-howdy.sh --fix
 ```
 
-Or run option 3 (Auto-fix).
+Or download manually:
+
+```bash
+cd /usr/lib64/security/howdy/dlib-data
+sudo curl -LO https://github.com/davisking/dlib-models/raw/master/dlib_face_recognition_resnet_model_v1.dat.bz2
+sudo curl -LO https://github.com/davisking/dlib-models/raw/master/mmod_human_face_detector.dat.bz2
+sudo curl -LO https://github.com/davisking/dlib-models/raw/master/shape_predictor_5_face_landmarks.dat.bz2
+sudo bunzip2 *.bz2
+```
 
 ### SELinux is blocking something
 

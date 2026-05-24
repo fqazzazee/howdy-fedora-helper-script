@@ -2,7 +2,7 @@
 
 **Automated facial authentication setup for Fedora Workstation with GNOME**
 
-This helper script sets up [Howdy](https://github.com/boltgolt/howdy) on Fedora, enabling Windows Hello-style face unlock using your laptop's infrared camera. It handles the Fedora-specific issues that make a manual installation painful: building the native PAM module from source, fixing dlib paths, configuring SELinux, and setting up GDM permissions.
+This helper script sets up [Howdy](https://github.com/boltgolt/howdy) on Fedora, enabling Windows Hello-style face unlock using your laptop's infrared camera. It handles the Fedora-specific issues that make a manual installation painful: installing the Python-based face recognition engine, wiring it into PAM via `pam_exec`, fixing dlib paths, configuring SELinux, and setting up GDM permissions.
 
 Once configured, you can unlock your screen, authorize sudo commands, and authenticate anywhere a password prompt appears — just by looking at your laptop.
 
@@ -14,7 +14,7 @@ Once configured, you can unlock your screen, authorize sudo commands, and authen
 
 - **Interactive menu** — No flags to memorize; just run the script
 - **Automatic IR camera detection** — Identifies Windows Hello sensors by pixel format; interactive disambiguation when multiple candidates are found
-- **Source build** — Produces native `pam_howdy.so` (no Python 2 dependency); pinned to a verified tagged release
+- **Python-based install** — Installs howdy v2.6.1 Python files to `/usr/lib64/security/howdy/`; hooks into PAM via `pam_exec.so` (standard PAM, no compilation, no Python 2 dependency)
 - **dlib handling** — Creates symlinks so face recognition works system-wide
 - **SELinux policy** — Pre-built `.te` policy file (`selinux/howdy_pam.te`) for GDM camera access; audit-log fallback if needed
 - **GDM integration** — Adds gdm user to video group automatically
@@ -46,9 +46,9 @@ sudo ./install-howdy.sh
 
 Choose **option 1** for a full installation. The script will:
 
-1. Install build dependencies
+1. Install dependencies (dlib via pip, v4l-utils, audit)
 2. Detect your IR camera
-3. Build howdy from source
+3. Download and install howdy v2.6.1 Python files
 4. Download face recognition models (~27 MB)
 5. Configure PAM, SELinux, and GDM permissions
 6. Prompt you to register your face
@@ -142,13 +142,15 @@ See [HOWDY-MANUAL.md](HOWDY-MANUAL.md) for detailed troubleshooting.
 
 ## How It Works
 
-The installer builds [Howdy](https://github.com/boltgolt/howdy) from source, which produces a native PAM module (`pam_howdy.so`). This module is added to PAM configuration files with the `sufficient` control flag, meaning:
+The installer downloads [Howdy](https://github.com/boltgolt/howdy) v2.6.1 and copies its Python files to `/usr/lib64/security/howdy/`. A thin shell wrapper (`howdy-auth`) is invoked by `pam_exec.so` — a standard PAM module that runs an external command and uses its exit code as the auth result:
 
-- If face recognition succeeds → authenticated, no password needed
-- If face recognition fails → fall through to password prompt
+- If face recognition succeeds (exit 0) → authenticated, no password needed
+- If face recognition fails (any other exit) → fall through to password prompt
+
+The PAM line uses the `[success=end default=ignore]` control flag so a failed face scan silently falls through to the next auth method (password) rather than blocking the whole session.
 
 The script also handles Fedora-specific issues:
-- **dlib path**: pip installs to `/usr/local/...` but PAM needs `/usr/lib64/...` — script creates symlinks
+- **dlib path**: pip installs to `/usr/local/...` but howdy needs `/usr/lib64/...` — script creates symlinks
 - **GDM permissions**: adds `gdm` user to `video` group for camera access
 - **SELinux**: installs a policy allowing GDM to access video devices
 

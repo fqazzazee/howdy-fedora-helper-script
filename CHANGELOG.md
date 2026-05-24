@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-05-24 — Visible scan results & reliability
+
+### Added
+
+- `pam_exec.so stdout` flag in the PAM line so the wrapper's "Recognized" / "Not recognized" message is relayed to the calling application (sudo, GDM, polkit) as a PAM_TEXT_INFO message and shown inline during the auth prompt — previously the result was only visible in `journalctl -t howdy`
+- `--check-pam` now reports whether each howdy line has the `stdout` flag, calling out lines that need a `--fix` upgrade
+- `add_howdy_to_pam` migrates existing howdy lines that lack `stdout` in place; `--fix` triggers a re-apply whenever any PAM file is missing the flag, so upgraders don't need to uninstall/reinstall
+
+### Changed
+
+- **Timeout**: raised from 8 s to 12 s. 8 s was a thin margin over the observed cold-start scan time (~7 s) and caused intermittent compare.py exit 11 (timeout) → "Not recognized" → password fallback even when the camera and model were healthy
+- **howdy-auth wrapper**: prints scan result to stdout (so pam_exec can relay it) in addition to the system journal; removed the `/dev/tty` write since stdout already covers interactive terminals
+
+---
+
+## [1.2.0] - 2026-05-24 — Fedora 44 Compatibility & PAM Fixes
+
+### Fixed
+
+- `HOWDY_REF` was pinned to `v3.2.1`, a tag that does not exist in the upstream repo; updated to `v2.6.1` (latest stable release)
+- `pam_python` (the previous PAM hook) requires `libpython2.7`, which is not available on Fedora 44 — removed entirely
+- `[success=end default=ignore]` PAM control flag broke sudo and su on Fedora 44 (PAM 1.7.2 does not accept `end` as a keyword — it requires a numeric jump count); replaced with `sufficient`
+- Polkit PAM file on Fedora 44 ships to `/usr/lib/pam.d/polkit-1` instead of `/etc/pam.d/`; installer now copies it as a local override before modifying
+- Four bugs in howdy v2.6.1's `ffmpeg_reader.py` fixed by the installer at copy time:
+  - `probe()` regex path parses dimension strings as `WxH` but assigned `(height, width)` — swapped to `(width, height)`
+  - `record()` called `.reshape([-1, width, height, 3])` — corrected to `[-1, height, width, 3]`
+  - `read()` compared a numpy array to `()` with `==`, raising `ValueError` — replaced with `isinstance()` check
+  - `read()` returned `0` (falsy) for the success flag; `video_capture.py` treats `not ret` as failure, so face auth always aborted — changed to return `True`
+
+### Changed
+
+- **Installation approach**: replaced meson/ninja source build with a direct copy of howdy v2.6.1's Python files to `/usr/lib64/security/howdy/`; no compilation step required
+- **PAM hook**: replaced `pam_python.so` with a `pam_exec.so` wrapper (`howdy-auth`) that calls `compare.py` directly with `$PAM_USER`; `pam_exec.so` is part of the standard `pam` package and always available
+- **PAM control flag**: uses `sufficient` — face success skips remaining auth modules; face failure falls through to password
+- **howdy-auth wrapper**: redirects all subprocess output to `/dev/null` and normalises exit codes to 0/1, preventing compare.py output from touching the PAM conversation
+- **Recording plugin**: switched from `opencv` to `ffmpeg`; OpenCV's MJPG format switch via `CAP_PROP_FOURCC` triggers `ioctl(VIDIOC_QBUF): Bad file descriptor` errors in PAM execution context, causing all frames to be invalid and every authentication to time out; ffmpeg negotiates the format before streaming starts and does not have this issue
+- **Timeout**: raised from 4 s to 8 s to give the IR camera time to warm up from a cold start in PAM context
+- **Dependencies**: removed build tools (`meson`, `ninja-build`, `cmake`, `gcc`, `gcc-c++`, `pam-devel`, `inih-devel`, `libevdev-devel`, `gtk3-devel`, `opencv-devel`); added `bzip2` for model decompression; added `ffmpeg-python` pip package for howdy's ffmpeg recorder
+- **Config file location**: howdy config is now at `/usr/lib64/security/howdy/config.ini` (where `compare.py` reads it via `__file__`-relative path) instead of `/etc/howdy/config.ini`
+- **dlib model location**: face recognition models now stored in `/usr/lib64/security/howdy/dlib-data/` (co-located with Python files) instead of `/usr/share/dlib-data/`
+- Polkit policy and bash completion installed from the cloned repo's `fedora/` and `autocomplete/` directories
+
+---
+
 ## v1.1.0 Robustness & UX Improvements
 
 ### Added

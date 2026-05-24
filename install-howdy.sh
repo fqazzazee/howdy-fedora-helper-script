@@ -38,8 +38,9 @@ header()  { echo -e "\n${BOLD}${CYAN}═══ $1 ═══${NC}\n"; }
 
 # ─── Pinned upstream versions ────────────────────────────────────────
 HOWDY_REPO="${HOWDY_REPO:-https://github.com/boltgolt/howdy.git}"
-HOWDY_REF="${HOWDY_REF:-v3.2.1}"   # override with HOWDY_REF=master to track upstream
-SCRIPT_VERSION="1.1.0"
+HOWDY_REF="${HOWDY_REF:-v2.6.1}"
+HOWDY_INSTALL_DIR="/usr/lib64/security/howdy"
+SCRIPT_VERSION="1.2.1"
 
 # ─── Global state ────────────────────────────────────────────────────
 NEEDS_GDM_RESTART=false
@@ -244,19 +245,9 @@ install_dependencies() {
         python3-devel \
         python3-opencv \
         opencv \
-        opencv-devel \
         v4l-utils \
-        cmake \
-        make \
-        gcc \
-        gcc-c++ \
-        pam-devel \
-        inih-devel \
-        libevdev-devel \
         git \
-        meson \
-        ninja-build \
-        gtk3-devel \
+        bzip2 \
         polkit-devel \
         policycoreutils-python-utils \
         audit 2>&1 | tail -5
@@ -264,6 +255,10 @@ install_dependencies() {
     # Install dlib via pip (Fedora doesn't ship a compatible python3-dlib RPM)
     info "Installing dlib via pip..."
     pip3 install dlib --break-system-packages 2>&1 | tail -3 || pip3 install dlib 2>&1 | tail -3
+
+    # ffmpeg-python is the Python binding used by howdy's ffmpeg recorder
+    info "Installing ffmpeg-python via pip..."
+    pip3 install ffmpeg-python --break-system-packages 2>&1 | tail -3 || pip3 install ffmpeg-python 2>&1 | tail -3
 
     success "Dependencies installed"
 }
@@ -378,9 +373,9 @@ fix_dlib_symlinks() {
     fi
 }
 
-# ─── Build & Install Howdy from Source ───────────────────────────────
+# ─── Install Howdy from Source ───────────────────────────────────────
 install_howdy() {
-    header "Building Howdy from Source"
+    header "Installing Howdy from Source"
 
     local howdy_dir
     howdy_dir=$(mktemp -d -t howdy-install-XXXXXX)
@@ -389,41 +384,107 @@ install_howdy() {
     info "Cloning howdy repository (ref: $HOWDY_REF)..."
     git clone "$HOWDY_REPO" "$howdy_dir" 2>&1 | tail -3
     git -C "$howdy_dir" checkout "$HOWDY_REF" 2>&1 | tail -3
-    info "Building from commit $(git -C "$howdy_dir" rev-parse --short HEAD)"
+    info "Installing from commit $(git -C "$howdy_dir" rev-parse --short HEAD)"
 
-    cd "$howdy_dir"
+    # Install Python files
+    rm -rf "$HOWDY_INSTALL_DIR"
+    mkdir -p "$HOWDY_INSTALL_DIR"
+    cp -r "$howdy_dir/src/." "$HOWDY_INSTALL_DIR/"
 
-    info "Configuring build..."
-    meson setup build --prefix=/usr -Dlibdir=lib64
+    # Fix shebangs to python3
+    find "$HOWDY_INSTALL_DIR" -name "*.py" -exec \
+        sed -i '1s|^#!/usr/bin/env python$|#!/usr/bin/env python3|;1s|^#!/usr/bin/python$|#!/usr/bin/python3|' {} \;
+    chmod +x "$HOWDY_INSTALL_DIR/cli.py"
 
-    info "Compiling..."
-    meson compile -C build
+    # Patch ffmpeg_reader.py (v2.6.1 ships with three bugs):
+    #  1. probe() regex path assigns (height, width) but format string is "WxH" — swap to (width, height)
+    #  2. record() reshape uses [-1, width, height, 3] — should be [-1, height, width, 3]
+    #  3. read() compares a numpy array to () with ==, which raises ValueError — use isinstance()
+    local ffmpeg_reader="$HOWDY_INSTALL_DIR/recorders/ffmpeg_reader.py"
+    sed -i \
+        's/(height, width) = \[x\.strip() for x in probe\[0\]\.split("x")\]/(width, height) = [x.strip() for x in probe[0].split("x")]/' \
+        "$ffmpeg_reader"
+    sed -i \
+        's/\.reshape(\[-1, self\.width, self\.height, 3\])/.reshape([-1, self.height, self.width, 3])/' \
+        "$ffmpeg_reader"
+    sed -i \
+        's/if self\.video == ():/if isinstance(self.video, tuple):/' \
+        "$ffmpeg_reader"
+    # ffmpeg_reader returns 0 for success; video_capture checks "if not ret" so 0 always fails — use True
+    sed -i \
+        's/return 0, self\.video/return True, self.video/g' \
+        "$ffmpeg_reader"
+    # ffmpeg.probe() fallback returns height/width as int, but the isdigit()
+    # checks on lines 69-71 assume strings — wrap with str() to handle both
+    sed -i \
+        's/if height\.isdigit()/if str(height).isdigit()/' \
+        "$ffmpeg_reader"
+    sed -i \
+        's/if width\.isdigit()/if str(width).isdigit()/' \
+        "$ffmpeg_reader"
+    info "ffmpeg_reader.py patched (6 upstream bugs fixed)"
 
-    info "Installing..."
-    meson install -C build
+    # PAM exec wrapper — calls compare.py with PAM_USER from environment.
+    # Prints the scan result to stdout (relayed to the calling application by
+    # pam_exec.so's `stdout` flag, so sudo/GDM/polkit display it inline) and
+    # also writes to the system journal. Exit codes are normalised to 0
+    # (success) or 1 (failure) so pam_exec.so always gets a clean result
+    # regardless of compare.py's internal codes (10=no model, 11=timeout,
+    # 13=too dark, etc.).
+    cat > "$HOWDY_INSTALL_DIR/howdy-auth" << 'EOF'
+#!/bin/bash
+[[ -z "${PAM_USER}" ]] && exit 1
 
-    # Verify pam_howdy.so was built
-    if [[ -f /usr/lib64/security/pam_howdy.so ]]; then
-        success "pam_howdy.so installed at /usr/lib64/security/pam_howdy.so"
-    elif [[ -f /usr/lib/security/pam_howdy.so ]]; then
-        success "pam_howdy.so installed at /usr/lib/security/pam_howdy.so"
+_notify() {
+    echo "$1"
+    command -v logger &>/dev/null && logger -t howdy "$1" 2>/dev/null
+}
+
+output=$(/usr/bin/python3 /usr/lib64/security/howdy/compare.py "${PAM_USER}" 2>&1)
+rc=$?
+
+if [ "$rc" -eq 0 ]; then
+    # compare.py prints 'Winning model: N ("label")' when end_report=true
+    label=$(printf '%s\n' "$output" \
+        | grep -oE 'Winning model: [0-9]+ \("[^"]+"\)' \
+        | grep -oE '"[^"]+"' \
+        | tr -d '"' \
+        | head -1)
+    if [ -n "$label" ]; then
+        _notify "Howdy: Recognized '${label}' for ${PAM_USER} — access granted"
     else
-        error "pam_howdy.so was not built! Check meson build output above."
+        _notify "Howdy: Face recognized for ${PAM_USER} — access granted"
     fi
+    exit 0
+else
+    _notify "Howdy: Face not recognized for ${PAM_USER} — falling back to password"
+    exit 1
+fi
+EOF
+    chmod +x "$HOWDY_INSTALL_DIR/howdy-auth"
+
+    # howdy command
+    ln -sf "$HOWDY_INSTALL_DIR/cli.py" /usr/bin/howdy
+
+    # Polkit policy
+    mkdir -p /usr/share/polkit-1/actions
+    cp "$howdy_dir/fedora/com.github.boltgolt.howdy.policy" /usr/share/polkit-1/actions/
+
+    # Bash completion
+    mkdir -p /usr/share/bash-completion/completions
+    cp "$howdy_dir/autocomplete/howdy" /usr/share/bash-completion/completions/
 
     if command -v howdy &>/dev/null; then
-        success "howdy command available"
+        success "howdy command available at $(command -v howdy)"
     else
         warn "howdy command not found in PATH"
     fi
 
-    # Record what was installed so --diagnose can report it
     mkdir -p /etc/howdy
     git -C "$howdy_dir" rev-parse HEAD > /etc/howdy/.installed-ref
     echo "$HOWDY_REF" > /etc/howdy/.installed-tag
 
-    cd /
-    success "Howdy built and installed from source"
+    success "Howdy installed from source"
 
     install_dlib_data
 }
@@ -432,7 +493,8 @@ install_howdy() {
 install_dlib_data() {
     header "Downloading Face Recognition Models"
 
-    local data_dir="/usr/share/dlib-data"
+    local data_dir="$HOWDY_INSTALL_DIR/dlib-data"
+    mkdir -p "$data_dir"
 
     if [[ -f "$data_dir/dlib_face_recognition_resnet_model_v1.dat" ]] && \
        [[ -f "$data_dir/mmod_human_face_detector.dat" ]] && \
@@ -441,88 +503,87 @@ install_dlib_data() {
         return
     fi
 
-    if [[ -f "$data_dir/install.sh" ]]; then
-        info "Running dlib data installer..."
-        cd "$data_dir"
-        bash ./install.sh
-        cd /
-        success "Face recognition models downloaded"
-    else
-        info "Downloading face recognition models manually..."
-        mkdir -p "$data_dir"
+    info "Downloading face recognition models..."
 
-        local base_url="https://github.com/davisking/dlib-models/raw/master"
-        local files=(
-            "dlib_face_recognition_resnet_model_v1.dat.bz2"
-            "mmod_human_face_detector.dat.bz2"
-            "shape_predictor_5_face_landmarks.dat.bz2"
-        )
+    local base_url="https://github.com/davisking/dlib-models/raw/master"
+    local files=(
+        "dlib_face_recognition_resnet_model_v1.dat.bz2"
+        "mmod_human_face_detector.dat.bz2"
+        "shape_predictor_5_face_landmarks.dat.bz2"
+    )
 
-        for file in "${files[@]}"; do
-            local dat_file="${file%.bz2}"
-            if [[ ! -f "$data_dir/$dat_file" ]]; then
-                info "Downloading $file..."
-                curl -L -o "$data_dir/$file" "$base_url/$file" 2>&1 | tail -2
-                bunzip2 -f "$data_dir/$file"
-            fi
-        done
+    for file in "${files[@]}"; do
+        local dat_file="${file%.bz2}"
+        if [[ ! -f "$data_dir/$dat_file" ]]; then
+            info "Downloading $file..."
+            curl -L -o "$data_dir/$file" "$base_url/$file" 2>&1 | tail -2
+            bunzip2 -f "$data_dir/$file"
+        fi
+    done
 
-        success "Face recognition models downloaded"
-    fi
+    success "Face recognition models downloaded to $data_dir"
 }
 
 # ─── Configure Howdy ─────────────────────────────────────────────────
 configure_howdy() {
     local ir_device="$1"
     local ir_format="${2:-YUYV}"
+    local config="$HOWDY_INSTALL_DIR/config.ini"
 
     header "Configuring Howdy"
 
-    mkdir -p /etc/howdy
-
-    if [[ -f /etc/howdy/config.ini ]] && [[ ! -f /etc/howdy/config.ini.pre-install ]]; then
-        cp /etc/howdy/config.ini /etc/howdy/config.ini.pre-install
-    fi
-
-    if [[ -f /etc/howdy/config.ini ]]; then
-        sed -i "s|^device_path.*|device_path = $ir_device|" /etc/howdy/config.ini
-        sed -i "s|^device_format.*|device_format = $ir_format|" /etc/howdy/config.ini
-        sed -i 's|^dark_threshold.*|dark_threshold = 60|' /etc/howdy/config.ini
-        sed -i 's|^certainty.*|certainty = 3.5|' /etc/howdy/config.ini
-        sed -i 's|^timeout.*|timeout = 4|' /etc/howdy/config.ini
-    else
-        cat > /etc/howdy/config.ini << EOF
+    if [[ ! -f "$config" ]]; then
+        # Fallback: write a minimal v2.6.1-compatible config
+        cat > "$config" << EOF
 [core]
-detection_notice = true
-abort_if_lid_closed = true
-no_confirmation = false
+detection_notice = false
+no_confirmation = true
+suppress_unknown = false
+ignore_ssh = true
+ignore_closed_lid = true
+disabled = false
+use_cnn = false
 
 [video]
-device_path = $ir_device
-device_format = $ir_format
-max_height = 480
-max_width = 640
-rotate = 0
-hflip = false
-vflip = false
-exposure = -1
-frame_scale = 1
-
-[detection]
 certainty = 3.5
-contiguous_count = 2
-timeout = 4
-dark_threshold = 60
-retry_delay = 0.05
+timeout = 12
+device_path = none
+max_height = 320
+frame_width = -1
+frame_height = -1
+dark_threshold = 50
+recording_plugin = ffmpeg
+device_format = v4l2
+force_mjpeg = false
+exposure = -1
 
 [snapshots]
-save_failed = false
-save_successful = false
-snapshots_path = /var/log/howdy/snapshots
+capture_failed = false
+capture_successful = false
+
+[debug]
+end_report = true
 EOF
     fi
 
-    success "Howdy config: device=$ir_device format=$ir_format"
+    if [[ -f "${config}.pre-install" ]]; then
+        true  # backup already exists
+    else
+        cp "$config" "${config}.pre-install"
+    fi
+
+    # Apply required overrides regardless of which config was copied from source.
+    # The v2.6.1 source ships recording_plugin=opencv and timeout=4, both of
+    # which break authentication in PAM context with MJPG cameras.
+    sed -i "s|^device_path.*|device_path = $ir_device|" "$config"
+    sed -i "s/^recording_plugin.*/recording_plugin = ffmpeg/" "$config"
+    sed -i "s/^timeout.*/timeout = 12/" "$config"
+    # end_report=true makes compare.py print the winning model label on success,
+    # which howdy-auth captures and re-emits as the "recognized as" message.
+    sed -i "s/^end_report.*/end_report = true/" "$config"
+    sed -i "s/^no_confirmation.*/no_confirmation = true/" "$config"
+
+    success "Howdy config: device=$ir_device format=$ir_format (ffmpeg plugin)"
 }
 
 # ─── Configure PAM ───────────────────────────────────────────────────
@@ -536,7 +597,10 @@ configure_pam() {
     echo ""
     sleep 2
 
-    local PAM_LINE="auth        sufficient    pam_howdy.so"
+    # `stdout` flag relays the wrapper's stdout to the calling application
+    # (sudo/GDM/polkit) as PAM_TEXT_INFO messages, so the user sees the
+    # face-scan result inline. `quiet` suppresses pam_exec's own syslog noise.
+    local PAM_LINE="auth        sufficient    pam_exec.so quiet stdout ${HOWDY_INSTALL_DIR}/howdy-auth"
 
     add_howdy_to_pam() {
         local pam_file="$1"
@@ -556,8 +620,21 @@ configure_pam() {
             cp -a "$pam_file" "${pam_file}.howdy-backup"
         fi
 
-        if grep -q "pam_howdy.so" "$pam_file"; then
-            success "$label — already configured"
+        if grep -qE "pam_exec.*howdy-auth" "$pam_file"; then
+            # Migrate older lines that lack the `stdout` flag, which is what
+            # makes the wrapper's "Recognized / Not recognized" message visible
+            # to the user during the auth prompt.
+            if grep -E "pam_exec.*howdy-auth" "$pam_file" | grep -qv stdout; then
+                awk -v new="$PAM_LINE" '
+                    /howdy-auth/ { print new; next }
+                    { print }
+                ' "$pam_file" > "${pam_file}.howdy-migrate" && \
+                    mv "${pam_file}.howdy-migrate" "$pam_file"
+                success "$label — upgraded (added stdout flag for visible scan messages)"
+                [[ "$pam_file" =~ gdm- ]] && NEEDS_GDM_RESTART=true
+            else
+                success "$label — already configured"
+            fi
             return 0
         fi
 
@@ -579,7 +656,7 @@ configure_pam() {
         local orig_auth new_auth howdy_count
         orig_auth=$(grep -c "^auth" "$pam_file" || true)
         new_auth=$(grep -c "^auth" "$tmpfile" || true)
-        howdy_count=$(grep -c "pam_howdy.so" "$tmpfile" || true)
+        howdy_count=$(grep -cE "pam_exec.*howdy-auth" "$tmpfile" || true)
 
         if (( new_auth != orig_auth + 1 )) || (( howdy_count != 1 )); then
             fail "$label — validation failed (auth: $orig_auth → $new_auth, howdy: $howdy_count)"
@@ -606,13 +683,17 @@ configure_pam() {
     add_howdy_to_pam "/etc/pam.d/sudo" "sudo"
     add_howdy_to_pam "/etc/pam.d/su" "su"
 
-    # Polkit GUI prompts (Fedora uses different names across versions)
+    # Polkit GUI prompts — Fedora 44+ ships polkit-1 to /usr/lib/pam.d/ rather
+    # than /etc/pam.d/; copy it as a local override before modifying.
     if [[ -f "/etc/pam.d/polkit-1" ]]; then
         add_howdy_to_pam "/etc/pam.d/polkit-1" "Polkit GUI prompts"
     elif [[ -f "/etc/pam.d/polkit" ]]; then
         add_howdy_to_pam "/etc/pam.d/polkit" "Polkit GUI prompts"
+    elif [[ -f "/usr/lib/pam.d/polkit-1" ]]; then
+        cp /usr/lib/pam.d/polkit-1 /etc/pam.d/polkit-1
+        add_howdy_to_pam "/etc/pam.d/polkit-1" "Polkit GUI prompts"
     else
-        warn "Polkit PAM file not found (neither polkit-1 nor polkit)"
+        warn "Polkit PAM file not found (checked /etc/pam.d/ and /usr/lib/pam.d/)"
     fi
 
     success "PAM configuration complete"
@@ -751,6 +832,9 @@ add_face_model() {
     echo "    3. Keep your face still during capture"
     echo ""
     read -rp "  Press Enter when ready..."
+    echo ""
+    warn "Note: 'ioctl(VIDIOC_QBUF): Bad file descriptor' may appear — this is harmless OpenCV noise with MJPG cameras and does not affect capture."
+    echo ""
 
     howdy add -U "$actual_user" || {
         fail "Face registration failed"
@@ -769,18 +853,23 @@ add_face_model() {
 check_pam() {
     header "PAM Configuration Check"
 
-    local pam_module=""
-    if [[ -f /usr/lib64/security/pam_howdy.so ]]; then
-        pam_module="/usr/lib64/security/pam_howdy.so"
-    elif [[ -f /usr/lib/security/pam_howdy.so ]]; then
-        pam_module="/usr/lib/security/pam_howdy.so"
+    if [[ -f "$HOWDY_INSTALL_DIR/pam.py" ]]; then
+        success "Howdy PAM script found: $HOWDY_INSTALL_DIR/pam.py"
+    else
+        fail "Howdy not installed at $HOWDY_INSTALL_DIR"
+        echo "  Run: sudo $0   (full install)"
     fi
 
-    if [[ -n "$pam_module" ]]; then
-        success "PAM module found: $pam_module"
+    if [[ -f /usr/lib64/security/pam_exec.so ]] || [[ -f /usr/lib/security/pam_exec.so ]]; then
+        success "pam_exec.so available (standard PAM)"
     else
-        fail "pam_howdy.so not found! Howdy needs to be built from source."
-        echo "  Run: sudo $0   (full install)"
+        fail "pam_exec.so not found — this is part of the pam package"
+    fi
+
+    if [[ -f "$HOWDY_INSTALL_DIR/howdy-auth" ]]; then
+        success "howdy-auth wrapper found: $HOWDY_INSTALL_DIR/howdy-auth"
+    else
+        fail "howdy-auth wrapper missing — reinstall with: sudo $0"
     fi
 
     echo ""
@@ -798,24 +887,40 @@ check_pam() {
         local file="${entry%%:*}"
         local label="${entry##*:}"
 
-        if [[ ! -f "$file" ]]; then
+        # Fedora 44+ ships polkit-1 to /usr/lib/pam.d/ instead of /etc/pam.d/
+        local effective_file="$file"
+        if [[ ! -f "$file" ]] && [[ "$file" == "/etc/pam.d/polkit-1" ]] && [[ -f "/usr/lib/pam.d/polkit-1" ]]; then
+            effective_file="/usr/lib/pam.d/polkit-1"
+        fi
+
+        if [[ ! -f "$effective_file" ]]; then
             echo -e "  ${YELLOW}—${NC} $label: file not found"
             continue
         fi
 
-        if grep -q "pam_howdy.so" "$file"; then
+        if grep -qE "pam_exec.*howdy-auth" "$effective_file"; then
             local howdy_line
-            howdy_line=$(grep -n "pam_howdy.so" "$file" | head -1 | cut -d: -f1)
+            howdy_line=$(grep -nE "pam_exec.*howdy-auth" "$effective_file" | head -1 | cut -d: -f1)
             local first_other_auth
-            first_other_auth=$(grep -n "^auth" "$file" | grep -v "pam_howdy" | head -1 | cut -d: -f1)
+            first_other_auth=$(grep -n "^auth" "$effective_file" | grep -vE "pam_exec.*howdy-auth" | head -1 | cut -d: -f1)
+
+            local has_stdout=""
+            if grep -E "pam_exec.*howdy-auth" "$effective_file" | grep -q stdout; then
+                has_stdout=" [stdout: scan result visible to user]"
+            else
+                has_stdout=" ${YELLOW}[no stdout flag — scan result hidden; run --fix to upgrade]${NC}"
+            fi
 
             if [[ -n "$howdy_line" ]] && [[ -n "$first_other_auth" ]] && [[ "$howdy_line" -lt "$first_other_auth" ]]; then
-                echo -e "  ${GREEN}✓${NC} $label: howdy on line $howdy_line (before other auth)"
+                echo -e "  ${GREEN}✓${NC} $label: howdy on line $howdy_line (before other auth)${has_stdout}"
             elif [[ -n "$howdy_line" ]]; then
-                echo -e "  ${YELLOW}⚠${NC} $label: howdy present but may be in wrong position"
+                echo -e "  ${YELLOW}⚠${NC} $label: howdy present but may be in wrong position${has_stdout}"
             fi
         else
             echo -e "  ${RED}✗${NC} $label: howdy NOT configured"
+            if [[ "$effective_file" == "/usr/lib/pam.d/polkit-1" ]]; then
+                echo -e "       Run: sudo $0 --fix   (will copy to /etc/pam.d/ and configure)"
+            fi
         fi
     done
 
@@ -825,7 +930,7 @@ check_pam() {
         if [[ -f "$file" ]]; then
             echo -e "\n  ${CYAN}$file:${NC}"
             grep "^auth" "$file" | while IFS= read -r line; do
-                if echo "$line" | grep -q "pam_howdy"; then
+                if echo "$line" | grep -qE "pam_exec.*howdy-auth"; then
                     echo -e "    ${GREEN}$line${NC}"
                 else
                     echo "    $line"
@@ -850,13 +955,25 @@ diagnose() {
         ((issues++))
     fi
 
-    if [[ -f /usr/lib64/security/pam_howdy.so ]]; then
-        success "pam_howdy.so found (native C++ module)"
-    elif [[ -f /usr/lib/security/pam_howdy.so ]]; then
-        success "pam_howdy.so found at /usr/lib/security/"
+    if [[ -f "$HOWDY_INSTALL_DIR/pam.py" ]]; then
+        success "Howdy Python files found at $HOWDY_INSTALL_DIR"
     else
-        fail "pam_howdy.so NOT found — PAM cannot use howdy"
-        echo "  Fix: Rebuild from source with: sudo $0"
+        fail "Howdy not installed at $HOWDY_INSTALL_DIR"
+        echo "  Fix: Reinstall with: sudo $0"
+        ((issues++))
+    fi
+
+    if [[ -f "$HOWDY_INSTALL_DIR/howdy-auth" ]]; then
+        success "howdy-auth wrapper found: $HOWDY_INSTALL_DIR/howdy-auth"
+    else
+        fail "howdy-auth wrapper missing — reinstall with: sudo $0"
+        ((issues++))
+    fi
+
+    if [[ -f /usr/lib64/security/pam_exec.so ]] || [[ -f /usr/lib/security/pam_exec.so ]]; then
+        success "pam_exec.so available"
+    else
+        fail "pam_exec.so not found (part of the pam package)"
         ((issues++))
     fi
 
@@ -892,8 +1009,8 @@ diagnose() {
     # 3. IR Camera
     echo -e "${BOLD}3. IR Camera${NC}"
     local config_device=""
-    if [[ -f /etc/howdy/config.ini ]]; then
-        config_device=$(grep "^device_path" /etc/howdy/config.ini 2>/dev/null | sed 's/.*= *//')
+    if [[ -f "$HOWDY_INSTALL_DIR/config.ini" ]]; then
+        config_device=$(grep "^device_path" "$HOWDY_INSTALL_DIR/config.ini" 2>/dev/null | sed 's/.*= *//')
     fi
 
     if [[ -n "$config_device" ]]; then
@@ -965,7 +1082,7 @@ diagnose() {
 
     # 7. dlib data files
     echo -e "${BOLD}7. dlib Face Recognition Models${NC}"
-    local data_dir="/usr/share/dlib-data"
+    local data_dir="$HOWDY_INSTALL_DIR/dlib-data"
     local data_ok=true
     for dat in dlib_face_recognition_resnet_model_v1.dat mmod_human_face_detector.dat shape_predictor_5_face_landmarks.dat; do
         if [[ -f "$data_dir/$dat" ]]; then
@@ -977,8 +1094,7 @@ diagnose() {
         fi
     done
     if ! $data_ok; then
-        echo "  Fix: cd /usr/share/dlib-data && sudo ./install.sh"
-        echo "  Or:  sudo $0 --fix"
+        echo "  Fix: sudo $0 --fix"
     fi
     echo ""
 
@@ -1029,25 +1145,33 @@ auto_fix() {
     fix_selinux
 
     # Fix 4: Check and repair PAM
+    # Re-run configure_pam if any expected file is either missing the howdy
+    # line entirely OR has an older line without the `stdout` flag (which is
+    # what makes the scan result visible to the user).
     echo ""
     info "Checking PAM configuration..."
     local needs_pam_fix=false
-    for file in /etc/pam.d/gdm-password /etc/pam.d/sudo /etc/pam.d/su; do
-        if [[ -f "$file" ]] && ! grep -q "pam_howdy.so" "$file"; then
+    for file in /etc/pam.d/gdm-password /etc/pam.d/sudo /etc/pam.d/su /etc/pam.d/polkit-1; do
+        [[ -f "$file" ]] || continue
+        if ! grep -qE "pam_exec.*howdy-auth" "$file"; then
+            needs_pam_fix=true
+            break
+        fi
+        if grep -E "pam_exec.*howdy-auth" "$file" | grep -qv stdout; then
             needs_pam_fix=true
             break
         fi
     done
 
     if $needs_pam_fix; then
-        info "Re-applying PAM configuration..."
+        info "Re-applying PAM configuration (will migrate any old lines)..."
         configure_pam
     else
         success "PAM configuration looks correct"
     fi
 
     # Fix 5: dlib face recognition model data
-    local data_dir="/usr/share/dlib-data"
+    local data_dir="$HOWDY_INSTALL_DIR/dlib-data"
     if [[ -f "$data_dir/dlib_face_recognition_resnet_model_v1.dat" ]] && \
        [[ -f "$data_dir/mmod_human_face_detector.dat" ]] && \
        [[ -f "$data_dir/shape_predictor_5_face_landmarks.dat" ]]; then
@@ -1056,20 +1180,86 @@ auto_fix() {
         install_dlib_data
     fi
 
-    # Fix 6: Verify pam_howdy.so exists
-    if [[ ! -f /usr/lib64/security/pam_howdy.so ]] && [[ ! -f /usr/lib/security/pam_howdy.so ]]; then
-        fail "pam_howdy.so is missing — howdy needs to be rebuilt from source"
+    # Fix 6: Enforce critical config values that the v2.6.1 source ships wrong.
+    # recording_plugin=opencv fails in PAM context with MJPG cameras (ioctl errors
+    # make every frame invalid → timeout → exit 11 → password fallback).
+    # timeout=4 is too short for cold-start PAM; end_report=true exposes the
+    # winning model label so howdy-auth can print "Recognized as '…'".
+    local config="$HOWDY_INSTALL_DIR/config.ini"
+    if [[ -f "$config" ]]; then
+        local config_changed=false
+        _fix_cfg() {
+            local key="$1" val="$2"
+            if grep -q "^${key}" "$config"; then
+                if ! grep -q "^${key} = ${val}$" "$config"; then
+                    sed -i "s/^${key}.*/${key} = ${val}/" "$config"
+                    success "Fixed config: ${key} = ${val}"
+                    config_changed=true
+                fi
+            else
+                echo "${key} = ${val}" >> "$config"
+                success "Added config: ${key} = ${val}"
+                config_changed=true
+            fi
+        }
+        _fix_cfg recording_plugin ffmpeg
+        _fix_cfg timeout          12
+        _fix_cfg end_report       true
+        _fix_cfg no_confirmation  true
+        $config_changed || success "Config values already correct"
+        unset -f _fix_cfg
+    fi
+
+    # Fix 7: Regenerate howdy-auth wrapper (picks up messaging and exit-code fixes)
+    if [[ -f "$HOWDY_INSTALL_DIR/howdy-auth" ]]; then
+        cat > "$HOWDY_INSTALL_DIR/howdy-auth" << 'AUTHEOF'
+#!/bin/bash
+[[ -z "${PAM_USER}" ]] && exit 1
+
+_notify() {
+    echo "$1"
+    command -v logger &>/dev/null && logger -t howdy "$1" 2>/dev/null
+}
+
+output=$(/usr/bin/python3 /usr/lib64/security/howdy/compare.py "${PAM_USER}" 2>&1)
+rc=$?
+
+if [ "$rc" -eq 0 ]; then
+    # compare.py prints 'Winning model: N ("label")' when end_report=true
+    label=$(printf '%s\n' "$output" \
+        | grep -oE 'Winning model: [0-9]+ \("[^"]+"\)' \
+        | grep -oE '"[^"]+"' \
+        | tr -d '"' \
+        | head -1)
+    if [ -n "$label" ]; then
+        _notify "Howdy: Recognized '${label}' for ${PAM_USER} — access granted"
+    else
+        _notify "Howdy: Face recognized for ${PAM_USER} — access granted"
+    fi
+    exit 0
+else
+    _notify "Howdy: Face not recognized for ${PAM_USER} — falling back to password"
+    exit 1
+fi
+AUTHEOF
+        chmod +x "$HOWDY_INSTALL_DIR/howdy-auth"
+        success "howdy-auth wrapper regenerated"
+    fi
+
+    # Fix 8: Verify howdy Python files exist
+    if [[ ! -f "$HOWDY_INSTALL_DIR/pam.py" ]]; then
+        fail "Howdy not installed at $HOWDY_INSTALL_DIR — reinstalling"
         if [[ "${NON_INTERACTIVE:-0}" == "1" ]]; then
-            info "Non-interactive mode: skipping rebuild prompt"
+            info "Non-interactive mode: skipping reinstall prompt"
         else
-            read -rp "Rebuild howdy now? (Y/n): " REPLY
+            read -rp "Reinstall howdy now? (Y/n): " REPLY
             if [[ ! $REPLY =~ ^[Nn]$ ]]; then
                 install_dependencies
                 install_howdy
             fi
         fi
     else
-        success "pam_howdy.so is present"
+        success "Howdy Python files present at $HOWDY_INSTALL_DIR"
     fi
 
     header "Fix Complete"
@@ -1102,7 +1292,7 @@ for pam_file in /etc/pam.d/gdm-password /etc/pam.d/gdm-fingerprint \
             cp "${pam_file}.howdy-backup" "$pam_file"
             rm -f "${pam_file}.howdy-backup"
         else
-            sed -i '/pam_howdy.so/d' "$pam_file"
+            sed -i '/pam_exec.*howdy-auth/d' "$pam_file"
         fi
         # Remove any timestamped backup files
         rm -f "${pam_file}".howdy-backup-*
@@ -1117,11 +1307,10 @@ echo "Removing howdy files..."
 rm -rf /etc/howdy
 rm -rf /var/lib/howdy
 rm -rf /var/log/howdy
-rm -f /usr/lib64/security/pam_howdy.so
-rm -f /usr/lib/security/pam_howdy.so
-rm -rf /usr/lib64/howdy
-rm -rf /usr/lib/howdy
+rm -rf /usr/lib64/security/howdy
 rm -f /usr/bin/howdy
+rm -f /usr/share/polkit-1/actions/com.github.boltgolt.howdy.policy
+rm -f /usr/share/bash-completion/completions/howdy
 
 echo "Removing dlib symlinks..."
 for site_dir in $(python3 -c "import site; [print(p) for p in site.getsitepackages()]" 2>/dev/null); do
@@ -1183,7 +1372,7 @@ print_summary() {
 full_install() {
     header "Howdy Facial Recognition Installer for Fedora  v${SCRIPT_VERSION}"
     echo "  Source: $HOWDY_REPO  (ref: $HOWDY_REF)"
-    echo "  Builds from source with native PAM module"
+    echo "  Python-based install via pam_exec"
     echo ""
 
     check_root
@@ -1307,7 +1496,7 @@ show_help() {
     echo "  --help              Show this help"
     echo ""
     echo "Environment overrides:"
-    echo "  HOWDY_REF=<tag>     Pin to a specific howdy git ref (default: v3.2.1)"
+    echo "  HOWDY_REF=<tag>     Pin to a specific howdy git ref (default: v2.6.1)"
     echo "  FORCE_DETECT=1      Ignore cached IR device and re-detect"
 }
 
