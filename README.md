@@ -7,7 +7,7 @@ This helper script sets up [Howdy](https://github.com/boltgolt/howdy) on Fedora,
 Once configured, you can unlock your screen, authorize sudo commands, and authenticate anywhere a password prompt appears — just by looking at your laptop.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Version](https://img.shields.io/badge/version-1.2.2-informational.svg)
+![Version](https://img.shields.io/badge/version-1.2.3-informational.svg)
 ![Desktop](https://img.shields.io/badge/desktop-GNOME%20%2F%20GDM-success.svg?logo=gnome)
 
 ### Fedora compatibility

@@ -42,7 +42,7 @@ header()  { echo -e "\n${BOLD}${CYAN}═══ $1 ═══${NC}\n"; }
 HOWDY_REPO="${HOWDY_REPO:-https://github.com/boltgolt/howdy.git}"
 HOWDY_REF="${HOWDY_REF:-v2.6.1}"
 HOWDY_INSTALL_DIR="/usr/lib64/security/howdy"
-SCRIPT_VERSION="1.2.2"
+SCRIPT_VERSION="1.2.3"
 
 # ─── Global state ────────────────────────────────────────────────────
 NEEDS_GDM_RESTART=false
@@ -856,7 +856,7 @@ add_face_model() {
         echo ""
         echo "  Troubleshooting:"
         echo "    - Run: sudo $0 --diagnose"
-        echo "    - Check camera: sudo howdy test"
+        echo "    - Test scan: sudo $0 --test"
         echo "    - Edit config: sudo howdy config"
         return 1
     }
@@ -938,6 +938,66 @@ tune_timeout() {
         warn "Heads up: ${new}s is quite short. If you only have 1 enrolled model,"
         warn "you may see more 'Face not recognized' failures. Enroll additional"
         warn "models (option 6) to compensate."
+    fi
+}
+
+# ─── Test Face Recognition ───────────────────────────────────────────
+# Stand-in for `howdy test`, which v2.6.1 refuses to run when
+# recording_plugin != opencv. We ship recording_plugin=ffmpeg (opencv
+# fails in PAM context on Fedora MJPG cameras — see install_howdy()),
+# so we invoke compare.py directly. This exercises the exact same code
+# path PAM uses via howdy-auth, so a pass/fail here mirrors real auth.
+test_face() {
+    header "Face Recognition Test"
+
+    local actual_user="${SUDO_USER:-$USER}"
+    if [[ "$actual_user" == "root" ]]; then
+        read -rp "Enter username to test: " actual_user
+    fi
+
+    local compare_py="$HOWDY_INSTALL_DIR/compare.py"
+    if [[ ! -f "$compare_py" ]]; then
+        fail "compare.py not found at $compare_py — reinstall with: sudo $0"
+        return 1
+    fi
+
+    local model_file="$HOWDY_INSTALL_DIR/models/${actual_user}.dat"
+    if [[ ! -s "$model_file" ]]; then
+        fail "No face models enrolled for '${actual_user}'. Run option 6 first."
+        return 1
+    fi
+
+    echo ""
+    info "Look at the IR camera — scanning..."
+    echo ""
+
+    local start elapsed output rc
+    start=$(date +%s)
+    output=$(/usr/bin/python3 "$compare_py" "$actual_user" 2>&1)
+    rc=$?
+    elapsed=$(( $(date +%s) - start ))
+
+    echo "$output"
+    echo ""
+
+    if [[ "$rc" -eq 0 ]]; then
+        local label
+        label=$(printf '%s\n' "$output" \
+            | grep -oE 'Winning model: [0-9]+ \("[^"]+"\)' \
+            | grep -oE '"[^"]+"' \
+            | tr -d '"' \
+            | head -1)
+        success "😊 Recognized as '${label:-$actual_user}' in ${elapsed}s"
+        return 0
+    else
+        warn "🤔 Not recognized (compare.py exit ${rc}, took ${elapsed}s)"
+        echo ""
+        echo "  Common exit codes:"
+        echo "    10 = no enrolled model     → option 6 to enrol a face"
+        echo "    11 = scan timeout          → option 7 to raise the timeout"
+        echo "    12 = no face detected      → re-position / improve framing"
+        echo "    13 = too dark              → improve IR lighting or add a dim model"
+        return 1
     fi
 }
 
@@ -1441,7 +1501,7 @@ print_summary() {
     echo "    howdy add          Add a face model"
     echo "    howdy list         List enrolled faces"
     echo "    howdy remove <id>  Remove a face model"
-    echo "    howdy test         Test face recognition"
+    echo "    sudo $0 --test     Test face recognition (uses ffmpeg plugin)"
     echo "    howdy config       Edit configuration"
     echo "    howdy disable      Temporarily disable"
     echo "    howdy enable       Re-enable"
@@ -1509,7 +1569,7 @@ full_install() {
             echo ""
             read -rp "Test face recognition? (Y/n): " REPLY
             if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-                howdy test || warn "Test had issues — run: sudo $0 --diagnose"
+                test_face || warn "Test had issues — run: sudo $0 --diagnose"
             fi
         fi
     fi
@@ -1560,8 +1620,8 @@ show_menu() {
         6) add_face_model ;;
         7) tune_timeout ;;
         8)
-            if command -v howdy &>/dev/null; then
-                howdy test
+            if [[ -f "$HOWDY_INSTALL_DIR/compare.py" ]]; then
+                test_face
             else
                 fail "Howdy is not installed. Choose option 1 first."
             fi
@@ -1589,6 +1649,7 @@ show_help() {
     echo "  --add-face          Register a face model"
     echo "  --tune-timeout      Interactively adjust scan timeout (4–18s)"
     echo "  --set-timeout N     Set scan timeout to N seconds (4–18, no prompt)"
+    echo "  --test              Test face recognition (works with ffmpeg plugin)"
     echo "  --uninstall         Remove howdy completely"
     echo "  --non-interactive   Skip all interactive prompts (alias: -y)"
     echo "  --help              Show this help"
@@ -1638,6 +1699,10 @@ case "${1:-}" in
             error "--set-timeout requires a value (4–18). Example: --set-timeout 8"
         fi
         tune_timeout "$2"
+        ;;
+    --test)
+        check_root
+        test_face
         ;;
     --uninstall|--remove)
         do_uninstall

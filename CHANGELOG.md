@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-05-24 — Fix Test option for ffmpeg recorder
+
+### Fixed
+
+- Menu option 8 ("Test") and the post-install "Test face recognition?" prompt called `howdy test`, which upstream v2.6.1 hard-rejects whenever `recording_plugin != opencv` (prints "Howdy has been configured to use a recorder which doesn't support the test command yet" and aborts). Since v1.2.0 ships `recording_plugin = ffmpeg` (opencv fails in PAM context on Fedora MJPG IR cameras with `ioctl(VIDIOC_QBUF): Bad file descriptor`), the test path was broken on every install. Replaced with a direct `compare.py $USER` invocation that exercises the same code path PAM uses via `howdy-auth` — same plugin, same config, same model dir, so a pass mirrors real auth
+
+### Added
+
+- `test_face()` helper: validates compare.py and the user's enrolled model exist, times the scan, prints the winning model label (`😊 Recognized as 'label' in Ns`) on success or the compare.py exit code with a hint table (10 = no model, 11 = timeout, 12 = no face detected, 13 = too dark) on failure
+- `--test` CLI flag for unattended/scripted runs
+
+### Changed
+
+- Stale `sudo howdy test` references replaced with `sudo install-howdy.sh --test` in the post-install summary and the `add_face_model` troubleshooting hint
+
+---
+
 ## [1.2.2] - 2026-05-24 — Tunable timeout, multi-face guidance, doc polish
 
 ### Added
