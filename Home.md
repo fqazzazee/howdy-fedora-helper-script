@@ -8,7 +8,8 @@ Welcome to the wiki for the Howdy Fedora Helper Script. This wiki provides suppl
 |----------|-------------|
 | [README](../blob/main/README.md) | Project overview and quick start |
 | [HOWDY-MANUAL](../blob/main/HOWDY-MANUAL.md) | Complete setup guide, configuration, and troubleshooting |
-| [CHANGELOG](../blob/main/CHANGELOG.md) | Release notes and version history |
+| [CHANGELOG](../blob/main/CHANGELOG.md) | Release notes and version history (v1.1.0 in progress) |
+| [CONTRIBUTING](../blob/main/CONTRIBUTING.md) | How to contribute, code style, SELinux policy notes |
 
 ## Wiki Pages
 

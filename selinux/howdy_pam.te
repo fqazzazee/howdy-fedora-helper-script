@@ -1,0 +1,16 @@
+module howdy_pam 1.1;
+
+require {
+    type xdm_t;
+    type v4l_device_t;
+    class chr_file { open read write ioctl map getattr };
+}
+
+# Allow GDM (xdm_t) to access video devices for face recognition.
+# Scope note: this allows xdm_t access to ANY v4l_device_t, not just the IR
+# camera. Howdy itself decides which device to use via /etc/howdy/config.ini.
+# This is broader than strictly necessary but safe in practice — xdm_t is the
+# GDM domain and v4l_device_t covers /dev/video* devices already group-gated
+# by 'video'. Tighten in a future revision if Fedora ships a more specific
+# subtype for IR cameras.
+allow xdm_t v4l_device_t:chr_file { open read write ioctl map getattr };

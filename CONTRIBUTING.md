@@ -49,6 +49,15 @@ Documentation improvements are always welcome:
 - Add comments for non-obvious logic
 - Use the existing logging functions: `info()`, `success()`, `warn()`, `fail()`, `error()`
 
+### SELinux Policy
+
+The SELinux type enforcement policy lives in `selinux/howdy_pam.te`. If you need to extend or tighten it:
+
+- Edit `selinux/howdy_pam.te` directly (not the heredoc in the script)
+- Bump the module version number in the `module` declaration
+- Document the scope of any new `allow` rules — the existing file has inline comments explaining why each permission is granted
+- Test with `checkmodule -M -m -o howdy_pam.mod howdy_pam.te && semodule_package -o howdy_pam.pp -m howdy_pam.mod && sudo semodule -i howdy_pam.pp`
+
 ### Testing
 
 Before submitting:

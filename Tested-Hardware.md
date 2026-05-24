@@ -7,6 +7,7 @@ This page lists hardware configurations confirmed to work with the Howdy Fedora 
 | Laptop | IR Camera | Fedora Version | GNOME | IR Device | Notes |
 |--------|-----------|----------------|-------|-----------|-------|
 | ASUS Zenbook 14 Flip UP3404VA-DS74T | USB2.0 FHD UVC WebCam (IR) | Fedora 43 | GNOME 49 | `/dev/video2` | Auto-detected as "possible IR (mixed formats)" |
+| ASUS Zenbook 14 Flip UP3404VA-DS74T | USB2.0 FHD UVC WebCam (IR) | Fedora 44 | GNOME 49 | `/dev/video2` | Same device; v1.1.0 installer tested and confirmed |
 
 ## How to Add Your Hardware
 

@@ -14,6 +14,20 @@ About 10–15 minutes on a typical system. Most of the time is spent compiling d
 
 This helper script is specifically written for Fedora with GNOME/GDM. The PAM configuration, SELinux handling, and package management commands are Fedora-specific. For other distributions, see the [upstream Howdy project](https://github.com/boltgolt/howdy) for general installation instructions.
 
+### Can I run this unattended (Kickstart, Ansible, CI)?
+
+Yes. Pass `--non-interactive` (or `-y`) before your action flag:
+
+```bash
+sudo ./install-howdy.sh --non-interactive --install
+```
+
+In this mode all interactive prompts are skipped: the first IR camera candidate is selected automatically, non-GDM warnings are printed but execution continues, and GDM is not restarted automatically (a reminder command is printed instead).
+
+### I'm using KDE/SDDM (not GNOME/GDM) — will this work?
+
+Partially. The script detects your display manager at startup and warns you if it isn't GDM. You can choose to continue; it will still install Howdy and configure PAM for `sudo`, `su`, and polkit — but GDM-specific steps (video group, gdm PAM files, GDM restart) are skipped automatically. Lock-screen face unlock requires GDM.
+
 ## Hardware
 
 ### How do I know if my laptop has a Windows Hello IR camera?
@@ -48,10 +62,15 @@ The GDM lock screen runs as the `gdm` user, which needs:
 1. Membership in the `video` group (for camera access)
 2. An SELinux policy allowing camera access
 
-Run the auto-fixer:
+Run the auto-fixer — it will prompt you to restart GDM at the end (open a TTY first for safety):
 
 ```bash
 sudo ./install-howdy.sh --fix
+```
+
+If you skipped the restart prompt or ran in `--non-interactive` mode:
+
+```bash
 sudo systemctl restart gdm
 ```
 

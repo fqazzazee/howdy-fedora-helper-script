@@ -13,14 +13,17 @@ Once configured, you can unlock your screen, authorize sudo commands, and authen
 ## Features
 
 - **Interactive menu** — No flags to memorize; just run the script
-- **Automatic IR camera detection** — Identifies Windows Hello sensors by pixel format
-- **Source build** — Produces native `pam_howdy.so` (no Python 2 dependency)
+- **Automatic IR camera detection** — Identifies Windows Hello sensors by pixel format; interactive disambiguation when multiple candidates are found
+- **Source build** — Produces native `pam_howdy.so` (no Python 2 dependency); pinned to a verified tagged release
 - **dlib handling** — Creates symlinks so face recognition works system-wide
-- **SELinux policy** — Pre-built policy for GDM camera access
+- **SELinux policy** — Pre-built `.te` policy file (`selinux/howdy_pam.te`) for GDM camera access; audit-log fallback if needed
 - **GDM integration** — Adds gdm user to video group automatically
+- **OS/DM version gate** — Enforces Fedora 40+; detects and warns on non-GDM display managers
+- **Transactional PAM edits** — Staged, validated, and atomically committed; timestamped backups kept for rollback
 - **8-point diagnostics** — Checks everything that can go wrong
 - **Auto-fix mode** — Repairs common issues with one command
 - **Clean uninstaller** — Removes everything including PAM modifications
+- **Non-interactive mode** — `--non-interactive` / `-y` for Kickstart/Ansible deployments
 
 ## Supported Authentication
 
@@ -55,13 +58,21 @@ After installation, lock your screen (Super+L) and look at the camera to test.
 ## Usage
 
 ```bash
-sudo ./install-howdy.sh              # Interactive menu
-sudo ./install-howdy.sh --install    # Full installation (skip menu)
-sudo ./install-howdy.sh --diagnose   # Health check
-sudo ./install-howdy.sh --fix        # Auto-fix issues
-sudo ./install-howdy.sh --check-pam  # Inspect PAM files
-sudo ./install-howdy.sh --detect-ir  # Re-detect camera
-sudo ./install-howdy.sh --uninstall  # Remove everything
+sudo ./install-howdy.sh                        # Interactive menu
+sudo ./install-howdy.sh --install              # Full installation (skip menu)
+sudo ./install-howdy.sh --diagnose             # Health check
+sudo ./install-howdy.sh --fix                  # Auto-fix issues
+sudo ./install-howdy.sh --check-pam            # Inspect PAM files
+sudo ./install-howdy.sh --detect-ir            # Re-detect camera
+sudo ./install-howdy.sh --uninstall            # Remove everything
+sudo ./install-howdy.sh --non-interactive ...  # Skip all prompts (also -y)
+```
+
+**Environment overrides:**
+
+```bash
+HOWDY_REF=master sudo ./install-howdy.sh --install   # Track upstream instead of pinned tag
+FORCE_DETECT=1   sudo ./install-howdy.sh --install   # Force IR camera re-detection
 ```
 
 ### Howdy Commands
@@ -80,10 +91,25 @@ sudo howdy enable           # Re-enable
 
 ## Requirements
 
-- Fedora Workstation 40+ (tested on Fedora 43)
-- GNOME desktop with GDM
+- Fedora Workstation 40+ (enforced; tested on Fedora 43 and 44)
+- GNOME desktop with GDM (non-GDM setups are warned and can opt to continue)
 - Laptop with Windows Hello compatible IR camera
 - Internet connection (for source code and models)
+
+## Repository Structure
+
+```
+howdy-fedora-helper-script/
+├── install-howdy.sh      # Main installer script
+├── selinux/
+│   └── howdy_pam.te      # SELinux type enforcement policy for GDM camera access
+├── README.md
+├── CHANGELOG.md
+├── CONTRIBUTING.md
+├── FAQ.md
+├── Home.md
+└── Tested-Hardware.md
+```
 
 ## Documentation
 
