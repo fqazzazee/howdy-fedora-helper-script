@@ -76,7 +76,31 @@ sudo systemctl restart gdm
 
 ### Can I require both face AND password?
 
-Yes, but it requires manual PAM configuration. Replace the `[success=end default=ignore]` control flag with `required` in the howdy PAM lines, and ensure a password module is also `required`. This makes face recognition an additional factor rather than a replacement.
+Yes, but it requires manual PAM configuration. Replace the `sufficient` control flag with `required` in the howdy PAM lines, and ensure a password module is also `required`. This makes face recognition an additional factor rather than a replacement.
+
+### Why do I sometimes get "Face not recognized" even when conditions look fine?
+
+The two most common causes are (1) a single enrolled face model not matching well due to small differences (glasses, slightly different lighting, head angle), and (2) the scan timing out before a confident match is found.
+
+**Fix #1 — register multiple face models:**
+
+```bash
+sudo howdy add        # add another model (with/without glasses, different lighting, etc.)
+sudo howdy list       # confirm
+```
+
+Three or more models dramatically reduces false rejections.
+
+**Fix #2 — tune the scan timeout:**
+
+```bash
+sudo ./install-howdy.sh --tune-timeout     # interactive (shows current + recommendations)
+sudo ./install-howdy.sh --set-timeout 12   # set directly (range: 4–18)
+```
+
+Recommended values:
+- **8s** when you have 3+ enrolled face models — the match comes fast, so a shorter window is fine
+- **12s** (default) when you have a single enrolled model — extra headroom for cold-start camera + dlib load
 
 ### How do I temporarily disable face recognition?
 

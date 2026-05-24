@@ -7,8 +7,23 @@ This helper script sets up [Howdy](https://github.com/boltgolt/howdy) on Fedora,
 Once configured, you can unlock your screen, authorize sudo commands, and authenticate anywhere a password prompt appears — just by looking at your laptop.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Platform](https://img.shields.io/badge/platform-Fedora%2040%2B-blue.svg)
-![Desktop](https://img.shields.io/badge/desktop-GNOME-green.svg)
+![Version](https://img.shields.io/badge/version-1.2.2-informational.svg)
+![Desktop](https://img.shields.io/badge/desktop-GNOME%20%2F%20GDM-success.svg?logo=gnome)
+
+### Fedora compatibility
+
+![Fedora 40+](https://img.shields.io/badge/Fedora_40%2B-required-blue?logo=fedora&logoColor=white)
+![Fedora 43](https://img.shields.io/badge/Fedora_43-tested-brightgreen?logo=fedora&logoColor=white)
+![Fedora 44](https://img.shields.io/badge/Fedora_44-tested-brightgreen?logo=fedora&logoColor=white)
+![Fedora 45](https://img.shields.io/badge/Fedora_45-untested-lightgrey?logo=fedora&logoColor=white)
+
+| Status | Versions | Notes |
+|---|---|---|
+| ✅ **Required minimum** | Fedora 40 | Enforced by the installer; older versions are rejected at startup |
+| ✅ **Tested & verified** | Fedora 43, 44 | All features working end-to-end (GDM, sudo, su, polkit) |
+| ⚠️ **Likely works** | Fedora 41, 42 | Same package set as 43/44; not regression-tested |
+| ❔ **Untested** | Fedora 45+ | Should work; please open an issue with `--diagnose` output if it doesn't |
+| ❌ **Unsupported** | Fedora 39 and older | Predates the PAM 1.7.x changes the installer relies on |
 
 ## Features
 
@@ -64,6 +79,8 @@ sudo ./install-howdy.sh --diagnose             # Health check
 sudo ./install-howdy.sh --fix                  # Auto-fix issues
 sudo ./install-howdy.sh --check-pam            # Inspect PAM files
 sudo ./install-howdy.sh --detect-ir            # Re-detect camera
+sudo ./install-howdy.sh --tune-timeout         # Adjust scan timeout interactively (4–18s)
+sudo ./install-howdy.sh --set-timeout 8        # Set scan timeout to N seconds, no prompt
 sudo ./install-howdy.sh --uninstall            # Remove everything
 sudo ./install-howdy.sh --non-interactive ...  # Skip all prompts (also -y)
 ```
@@ -142,17 +159,70 @@ See [HOWDY-MANUAL.md](HOWDY-MANUAL.md) for detailed troubleshooting.
 
 ## How It Works
 
-The installer downloads [Howdy](https://github.com/boltgolt/howdy) v2.6.1 and copies its Python files to `/usr/lib64/security/howdy/`. A thin shell wrapper (`howdy-auth`) is invoked by `pam_exec.so` — a standard PAM module that runs an external command and uses its exit code as the auth result:
+The installer downloads [Howdy](https://github.com/boltgolt/howdy) v2.6.1 and copies its Python files to `/usr/lib64/security/howdy/`. A thin shell wrapper (`howdy-auth`) is invoked by `pam_exec.so` — a standard PAM module bundled with every Linux system that runs an external command and uses its exit code as the auth result.
 
-- If face recognition succeeds (exit 0) → authenticated, no password needed
-- If face recognition fails (any other exit) → fall through to password prompt
+### PAM authentication flow
 
-The PAM line uses the `[success=end default=ignore]` control flag so a failed face scan silently falls through to the next auth method (password) rather than blocking the whole session.
+```text
+   ┌──────────────────────────────┐
+   │  User triggers an auth event │   sudo, GDM login/lock,
+   │  (any PAM-protected action)  │   polkit prompt, su, …
+   └───────────────┬──────────────┘
+                   │
+                   ▼
+   ┌──────────────────────────────────────────────────────────┐
+   │  /etc/pam.d/<service>                                    │
+   │                                                          │
+   │  auth  sufficient  pam_exec.so quiet stdout \            │
+   │                     /usr/lib64/security/howdy/howdy-auth │
+   │  auth  include     system-auth        ← password module  │
+   └───────────────┬──────────────────────────────────────────┘
+                   │
+                   ▼  (pam_exec runs the wrapper)
+   ┌──────────────────────────────┐
+   │  howdy-auth  (bash wrapper)  │
+   │     └─ python3 compare.py    │
+   │           └─ IR camera grab  │
+   │              + dlib match    │
+   └───────────────┬──────────────┘
+                   │
+                   ▼
+            ╭─────────────╮
+            │ exit code 0?│
+            ╰──┬───────┬──╯
+          Yes  │       │  No
+               ▼       ▼
+   ┌───────────────┐  ┌─────────────────────────┐
+   │ ✅  sufficient│  │ 🔒  sufficient ignored  │
+   │     succeeded │  │     on failure          │
+   │     AUTH ENDS │  │     → fall through to   │
+   │     no pwd    │  │       system-auth       │
+   │     prompt    │  │     → password prompt   │
+   └───────────────┘  └─────────────────────────┘
+```
 
-The script also handles Fedora-specific issues:
+**Key flags**
+- `sufficient` — success short-circuits the auth stack (no password); failure is silently ignored so the next module runs
+- `stdout` — `pam_exec.so` relays the wrapper's stdout to the calling application (sudo/GDM/polkit) so you see the "Recognized" / "Not recognized" message inline
+- `quiet` — suppresses `pam_exec`'s own "command exited with status N" syslog noise (the wrapper logs its own structured messages via `logger -t howdy`)
+
+### Fedora-specific handling
+
+The script also handles things that aren't part of upstream howdy:
 - **dlib path**: pip installs to `/usr/local/...` but howdy needs `/usr/lib64/...` — script creates symlinks
 - **GDM permissions**: adds `gdm` user to `video` group for camera access
 - **SELinux**: installs a policy allowing GDM to access video devices
+- **PAM file locations**: Fedora 44 ships `polkit-1` to `/usr/lib/pam.d/`; the installer copies it as a local override before editing
+
+## Recommended: register multiple face models
+
+For best accuracy, **register more than one face model**. A single model captures one moment in time and is the leading cause of false rejections. Re-run option 6 (or `sudo howdy add`) for each:
+
+- **One without glasses, one with** (if you wear glasses sometimes)
+- **One in normal lighting, one dimmer** (evening vs. day)
+- **Slight head-angle variations** (straight, slightly left, slightly right)
+
+Three or more enrolled models lets you drop the scan timeout to ~8s (option 7 / `--set-timeout 8`) because a match is typically found in the first few frames. With a single model, keep the default 12s timeout.
 
 ## Credits
 
@@ -168,6 +238,10 @@ This installer script adds Fedora-specific automation, diagnostics, and fixes. I
 This installer script is released under the **MIT License**. See [LICENSE](LICENSE) for details.
 
 Note: [Howdy](https://github.com/boltgolt/howdy) itself is licensed under the MIT License. [dlib](http://dlib.net/) is licensed under the Boost Software License. This installer downloads and builds these projects but does not redistribute their code.
+
+## AI Usage Disclosure
+
+Portions of this installer (script logic, PAM diagnostics, documentation) were drafted with the assistance of AI tools (Anthropic's Claude). All code is human-reviewed, tested on real hardware, and the maintainer takes full responsibility for what ships. AI was used as a collaborator, not an unattended author.
 
 ## Contributing
 

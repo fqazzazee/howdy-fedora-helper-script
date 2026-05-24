@@ -1,5 +1,11 @@
 # Howdy Fedora Helper Script — Wiki
 
+![Version](https://img.shields.io/badge/version-1.2.2-informational.svg)
+![Fedora 40+](https://img.shields.io/badge/Fedora_40%2B-required-blue?logo=fedora&logoColor=white)
+![Fedora 43](https://img.shields.io/badge/Fedora_43-tested-brightgreen?logo=fedora&logoColor=white)
+![Fedora 44](https://img.shields.io/badge/Fedora_44-tested-brightgreen?logo=fedora&logoColor=white)
+![Desktop](https://img.shields.io/badge/desktop-GNOME%20%2F%20GDM-success.svg?logo=gnome)
+
 Welcome to the wiki for the Howdy Fedora Helper Script. This wiki provides supplementary information beyond the main documentation.
 
 ## Documentation

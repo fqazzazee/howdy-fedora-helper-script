@@ -11,6 +11,8 @@
 #   sudo ./install-howdy.sh --fix                  # Auto-fix common issues
 #   sudo ./install-howdy.sh --check-pam            # Inspect PAM configuration
 #   sudo ./install-howdy.sh --detect-ir            # Detect IR camera only
+#   sudo ./install-howdy.sh --tune-timeout         # Interactively set scan timeout (4–18s)
+#   sudo ./install-howdy.sh --set-timeout 8        # Set scan timeout to N seconds, no prompt
 #   sudo ./install-howdy.sh --uninstall            # Remove howdy completely
 #   sudo ./install-howdy.sh --non-interactive ...  # Skip all prompts (also -y)
 #
@@ -40,7 +42,7 @@ header()  { echo -e "\n${BOLD}${CYAN}═══ $1 ═══${NC}\n"; }
 HOWDY_REPO="${HOWDY_REPO:-https://github.com/boltgolt/howdy.git}"
 HOWDY_REF="${HOWDY_REF:-v2.6.1}"
 HOWDY_INSTALL_DIR="/usr/lib64/security/howdy"
-SCRIPT_VERSION="1.2.1"
+SCRIPT_VERSION="1.2.2"
 
 # ─── Global state ────────────────────────────────────────────────────
 NEEDS_GDM_RESTART=false
@@ -450,6 +452,7 @@ if [ "$rc" -eq 0 ]; then
         | grep -oE '"[^"]+"' \
         | tr -d '"' \
         | head -1)
+    _notify "😊 Welcome back, ${label:-${PAM_USER}}! ✨"
     if [ -n "$label" ]; then
         _notify "Howdy: Recognized '${label}' for ${PAM_USER} — access granted"
     else
@@ -457,6 +460,7 @@ if [ "$rc" -eq 0 ]; then
     fi
     exit 0
 else
+    _notify "🤔 Hmm, that doesn't look like ${PAM_USER}..."
     _notify "Howdy: Face not recognized for ${PAM_USER} — falling back to password"
     exit 1
 fi
@@ -831,6 +835,17 @@ add_face_model() {
     echo "    2. The IR LEDs should light up"
     echo "    3. Keep your face still during capture"
     echo ""
+    echo -e "  ${BOLD}${YELLOW}💡 Highly recommended: register MULTIPLE face models${NC}"
+    echo "     Better accuracy and fewer false rejections come from having"
+    echo "     several enrolled angles/conditions. Re-run this option to add"
+    echo "     additional models:"
+    echo "       • One without glasses, one with glasses (if you wear them)"
+    echo "       • One in normal indoor lighting, one in dimmer light"
+    echo "       • Slight head-angle variations (straight on, slight left/right)"
+    echo "     Multiple models also let you run with a shorter timeout"
+    echo "     (option 7 → Tune timeout) — 8s works well with 3+ models;"
+    echo "     12s is the safe default for a single model."
+    echo ""
     read -rp "  Press Enter when ready..."
     echo ""
     warn "Note: 'ioctl(VIDIOC_QBUF): Bad file descriptor' may appear — this is harmless OpenCV noise with MJPG cameras and does not affect capture."
@@ -847,6 +862,83 @@ add_face_model() {
     }
 
     success "Face model added for user: $actual_user"
+    echo ""
+    info "Tip: run 'sudo howdy list' to see all enrolled models."
+    info "     Re-run option 6 to add another (with/without glasses, etc.)."
+}
+
+# ─── Tune Recognition Timeout ────────────────────────────────────────
+# Adjusts the per-attempt face-scan timeout in /usr/lib64/security/howdy/config.ini.
+# Valid range: 4–18 seconds (anything outside this is rejected as harmful: too
+# short and cold-start scans never finish; too long and PAM feels broken).
+#
+# Optional first argument: a numeric value to set directly (used by --set-timeout).
+# Without an argument, prompts interactively.
+tune_timeout() {
+    local requested="${1:-}"
+    local config="$HOWDY_INSTALL_DIR/config.ini"
+
+    header "Tune Recognition Timeout"
+
+    if [[ ! -f "$config" ]]; then
+        error "Howdy is not installed at $HOWDY_INSTALL_DIR. Run a full install first."
+    fi
+
+    local current
+    current=$(grep "^timeout" "$config" 2>/dev/null | sed 's/.*= *//' | head -1)
+    current="${current:-12}"
+
+    local TIMEOUT_MIN=4
+    local TIMEOUT_MAX=18
+
+    echo "  Current timeout: ${BOLD}${current}s${NC}"
+    echo ""
+    echo "  Recommended values:"
+    echo -e "    ${GREEN}8s${NC}  — fast, works well with ${BOLD}multiple${NC} enrolled face models"
+    echo "          (with/without glasses, varied lighting): more candidate"
+    echo "          models means a match is usually found in the first few"
+    echo "          frames, so a shorter window is plenty"
+    echo -e "    ${GREEN}12s${NC} — safe default for a ${BOLD}single${NC} enrolled face model"
+    echo "          (extra headroom for cold-start camera, dlib load, and"
+    echo "          face search; the v1.2.1 default)"
+    echo ""
+    echo "  Range: ${TIMEOUT_MIN} (minimum) – ${TIMEOUT_MAX} (maximum) seconds"
+    echo ""
+
+    local new="$requested"
+
+    if [[ -z "$new" ]]; then
+        if [[ "${NON_INTERACTIVE:-0}" == "1" ]]; then
+            info "Non-interactive mode and no value provided — leaving timeout at ${current}s"
+            info "Use --set-timeout N to change it directly"
+            return 0
+        fi
+        read -rp "  Enter new timeout in seconds [${current}]: " new
+        new="${new:-$current}"
+    fi
+
+    if ! [[ "$new" =~ ^[0-9]+$ ]]; then
+        error "Invalid timeout: '$new' (must be a positive integer)"
+    fi
+
+    if (( new < TIMEOUT_MIN )) || (( new > TIMEOUT_MAX )); then
+        error "Timeout ${new}s is out of range (must be ${TIMEOUT_MIN}–${TIMEOUT_MAX} seconds)"
+    fi
+
+    if [[ "$new" == "$current" ]]; then
+        info "Timeout unchanged (${current}s)"
+        return 0
+    fi
+
+    sed -i "s/^timeout.*/timeout = $new/" "$config"
+    success "Timeout updated: ${current}s → ${new}s"
+    info "Takes effect on the next auth attempt — no restart needed."
+
+    if (( new <= 6 )); then
+        warn "Heads up: ${new}s is quite short. If you only have 1 enrolled model,"
+        warn "you may see more 'Face not recognized' failures. Enroll additional"
+        warn "models (option 6) to compensate."
+    fi
 }
 
 # ─── PAM Configuration Check ─────────────────────────────────────────
@@ -1231,6 +1323,7 @@ if [ "$rc" -eq 0 ]; then
         | grep -oE '"[^"]+"' \
         | tr -d '"' \
         | head -1)
+    _notify "😊 Welcome back, ${label:-${PAM_USER}}! ✨"
     if [ -n "$label" ]; then
         _notify "Howdy: Recognized '${label}' for ${PAM_USER} — access granted"
     else
@@ -1238,6 +1331,7 @@ if [ "$rc" -eq 0 ]; then
     fi
     exit 0
 else
+    _notify "🤔 Hmm, that doesn't look like ${PAM_USER}..."
     _notify "Howdy: Face not recognized for ${PAM_USER} — falling back to password"
     exit 1
 fi
@@ -1448,13 +1542,14 @@ show_menu() {
     echo "  3)  Auto-fix            Fix common issues (dlib, SELinux, PAM, GDM)"
     echo "  4)  Check PAM           Inspect PAM configuration files"
     echo "  5)  Detect IR camera    Scan for Windows Hello IR sensor"
-    echo "  6)  Add face model      Register your face"
-    echo "  7)  Test                Test face recognition"
-    echo "  8)  Uninstall           Remove howdy completely"
-    echo "  9)  Help                Show command-line usage"
+    echo "  6)  Add face model      Register your face (run multiple times!)"
+    echo "  7)  Tune timeout        Adjust scan timeout (4–18s; default 12s)"
+    echo "  8)  Test                Test face recognition"
+    echo "  9)  Uninstall           Remove howdy completely"
+    echo " 10)  Help                Show command-line usage"
     echo "  0)  Exit"
     echo ""
-    read -rp "  Choose [0-9]: " choice
+    read -rp "  Choose [0-10]: " choice
 
     case "$choice" in
         1) full_install ;;
@@ -1463,15 +1558,16 @@ show_menu() {
         4) check_pam ;;
         5) detect_ir_camera ;;
         6) add_face_model ;;
-        7)
+        7) tune_timeout ;;
+        8)
             if command -v howdy &>/dev/null; then
                 howdy test
             else
                 fail "Howdy is not installed. Choose option 1 first."
             fi
             ;;
-        8) do_uninstall ;;
-        9) show_help ;;
+        9) do_uninstall ;;
+        10) show_help ;;
         0) exit 0 ;;
         *) error "Invalid choice: $choice" ;;
     esac
@@ -1491,6 +1587,8 @@ show_help() {
     echo "  --check-pam         Inspect PAM configuration"
     echo "  --detect-ir         Detect IR camera only"
     echo "  --add-face          Register a face model"
+    echo "  --tune-timeout      Interactively adjust scan timeout (4–18s)"
+    echo "  --set-timeout N     Set scan timeout to N seconds (4–18, no prompt)"
     echo "  --uninstall         Remove howdy completely"
     echo "  --non-interactive   Skip all interactive prompts (alias: -y)"
     echo "  --help              Show this help"
@@ -1529,6 +1627,17 @@ case "${1:-}" in
     --add-face|--add)
         check_root
         add_face_model
+        ;;
+    --tune-timeout)
+        check_root
+        tune_timeout
+        ;;
+    --set-timeout)
+        check_root
+        if [[ -z "${2:-}" ]]; then
+            error "--set-timeout requires a value (4–18). Example: --set-timeout 8"
+        fi
+        tune_timeout "$2"
         ;;
     --uninstall|--remove)
         do_uninstall

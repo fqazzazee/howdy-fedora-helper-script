@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-05-24 — Tunable timeout, multi-face guidance, doc polish
+
+### Added
+
+- **Tunable scan timeout** (option 7 in the menu, `--tune-timeout` interactively, or `--set-timeout N` for unattended use). Valid range 4–18 seconds; rejects out-of-range values with a clear error. Persists to `/usr/lib64/security/howdy/config.ini` and takes effect on the next auth attempt — no restart needed
+- **Multi-face enrollment guidance** in `add_face_model()`: prominent prompt during enrollment recommending multiple models (with/without glasses, varied lighting, slight angle changes) for accuracy, and post-enrollment tip pointing to `howdy list` and the option to re-run for additional models
+- **Beautified scan-result messages** — the wrapper now prefixes the verbose `Howdy: …` line with a friendly emoji line (`😊 Welcome back, <user>! ✨` on success, `🤔 Hmm, that doesn't look like <user>…` on failure) that appears inline in sudo/GDM/polkit prompts. Both the structured log line and the emoji line go to stdout and `journalctl -t howdy`
+- **Fedora compatibility matrix** in `README.md` with shields.io badges for F40+ (required), F43/F44 (tested), F41/F42 (likely works), F45+ (untested), and pre-F40 (unsupported)
+- **ASCII PAM authentication-flow diagram** in `README.md`'s "How It Works" section, illustrating where the wrapper sits in the auth stack and how `sufficient` short-circuiting interacts with the password fallback
+- **AI Usage Disclosure** section in `README.md` after the License section
+- **FAQ entry** covering intermittent "Face not recognized" failures with both fixes (enroll more models, tune timeout)
+
+### Changed
+
+- Interactive menu grew from 9 to 10 numbered options to accommodate "Tune timeout"; menu prompt reads `Choose [0-10]`. Option ordering: 6 = Add face → 7 = Tune timeout → 8 = Test → 9 = Uninstall → 10 = Help
+- `add_face_model()` now points users at option 7 for timeout tuning after they understand multi-model registration
+- `README.md` "How It Works" rewritten with the new diagram and accurate `sufficient` flag explanation (the previous text referenced the v1.0-era `[success=end default=ignore]` flag that hasn't been used since v1.2.0)
+- `FAQ.md` "face AND password" entry updated to reference `sufficient` instead of the obsolete `[success=end default=ignore]`
+
+---
+
 ## [1.2.1] - 2026-05-24 — Visible scan results & reliability
 
 ### Added
