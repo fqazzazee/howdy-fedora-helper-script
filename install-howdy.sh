@@ -47,7 +47,7 @@ header()  { echo -e "\n${BOLD}${CYAN}═══ $1 ═══${NC}\n"; }
 HOWDY_REPO="${HOWDY_REPO:-https://github.com/boltgolt/howdy.git}"
 HOWDY_REF="${HOWDY_REF:-v2.6.1}"
 HOWDY_INSTALL_DIR="/usr/lib64/security/howdy"
-SCRIPT_VERSION="1.3.0"
+SCRIPT_VERSION="1.3.2"
 
 # Accepted scan timeout range (seconds); 12 is the default
 TIMEOUT_MIN=4
