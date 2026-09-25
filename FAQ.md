@@ -114,9 +114,31 @@ Re-enable with:
 sudo howdy enable
 ```
 
+Before v1.3.0 these commands had no effect: upstream checks the `disabled` option in `pam.py`, which the `pam_exec` wrapper never runs. The wrapper now checks `disabled`, `ignore_ssh`, and `ignore_closed_lid` itself. Run `sudo ./install-howdy.sh --fix` once to regenerate it.
+
+### Why doesn't the camera turn on over SSH or with the lid closed?
+
+With `ignore_ssh = true` (the default), the wrapper skips the scan for SSH sessions and you go straight to the password prompt. With `ignore_closed_lid = true`, it skips the scan while the lid is closed (docked with an external monitor), so you don't wait for a timeout on every `sudo`.
+
+### Why do I still get an "Unlock Login Keyring" prompt after a face login?
+
+The login keyring is encrypted with your password. After a password login, `pam_gnome_keyring` uses the password you typed to unlock it. A face login never sees a password, so the keyring stays locked until an app asks for a secret. At that point GNOME prompts you.
+
+To fix it, run:
+
+```bash
+sudo ./install-howdy.sh --setup-keyring
+```
+
+It gives the login keyring a random password, seals it with the TPM, and unlocks the keyring automatically at every login. Keep the recovery password it prints. Undo it with `--remove-keyring`. See the README for the trade-offs.
+
+### I changed my login password. Does keyring auto-unlock still work?
+
+Yes. The keyring's random password doesn't depend on your login password, so nothing needs updating.
+
 ### Does this work with fingerprint readers?
 
-Yes, they're independent. You can have both howdy (face) and fprintd (fingerprint) configured. PAM will try each in order based on your configuration.
+Yes, they're independent. You can have both howdy (face) and fprintd (fingerprint) configured. The installer puts howdy only in `gdm-password`, not `gdm-fingerprint`: GDM runs both at the same time, and two face scans would fight over the camera.
 
 ## Security
 

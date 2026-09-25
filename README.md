@@ -7,7 +7,7 @@ This helper script sets up [Howdy](https://github.com/boltgolt/howdy) on Fedora,
 Once configured, you can unlock your screen, authorize sudo commands, and authenticate anywhere a password prompt appears — just by looking at your laptop.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Version](https://img.shields.io/badge/version-1.2.3-informational.svg)
+![Version](https://img.shields.io/badge/version-1.3.0-informational.svg)
 ![Desktop](https://img.shields.io/badge/desktop-GNOME%20%2F%20GDM-success.svg?logo=gnome)
 
 ### Fedora compatibility
@@ -35,7 +35,8 @@ Once configured, you can unlock your screen, authorize sudo commands, and authen
 - **GDM integration** — Adds gdm user to video group automatically
 - **OS/DM version gate** — Enforces Fedora 40+; detects and warns on non-GDM display managers
 - **Transactional PAM edits** — Staged, validated, and atomically committed; timestamped backups kept for rollback
-- **8-point diagnostics** — Checks everything that can go wrong
+- **9-point diagnostics** — Checks everything that can go wrong
+- **Keyring auto-unlock** — Optional: no more "Unlock Login Keyring" prompt after a face login (TPM-sealed, see below)
 - **Auto-fix mode** — Repairs common issues with one command
 - **Clean uninstaller** — Removes everything including PAM modifications
 - **Non-interactive mode** — `--non-interactive` / `-y` for Kickstart/Ansible deployments
@@ -81,6 +82,9 @@ sudo ./install-howdy.sh --check-pam            # Inspect PAM files
 sudo ./install-howdy.sh --detect-ir            # Re-detect camera
 sudo ./install-howdy.sh --tune-timeout         # Adjust scan timeout interactively (4–18s)
 sudo ./install-howdy.sh --set-timeout 8        # Set scan timeout to N seconds, no prompt
+sudo ./install-howdy.sh --test                 # Test face recognition
+sudo ./install-howdy.sh --setup-keyring        # Auto-unlock the login keyring after face login
+sudo ./install-howdy.sh --remove-keyring       # Undo --setup-keyring
 sudo ./install-howdy.sh --uninstall            # Remove everything
 sudo ./install-howdy.sh --non-interactive ...  # Skip all prompts (also -y)
 ```
@@ -100,9 +104,8 @@ After installation, howdy's own commands are available:
 sudo howdy add              # Register your face
 sudo howdy list             # List face models
 sudo howdy remove <id>      # Remove a model
-sudo howdy test             # Live camera test
 sudo howdy config           # Edit configuration
-sudo howdy disable          # Temporarily disable
+sudo howdy disable          # Temporarily disable (face scan skipped, password only)
 sudo howdy enable           # Re-enable
 ```
 
@@ -120,6 +123,8 @@ howdy-fedora-helper-script/
 ├── install-howdy.sh      # Main installer script
 ├── selinux/
 │   └── howdy_pam.te      # SELinux type enforcement policy for GDM camera access
+├── keyring/
+│   └── howdy-keyring     # Login-keyring unlock helper (installed by --setup-keyring)
 ├── README.md
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
@@ -130,7 +135,7 @@ howdy-fedora-helper-script/
 
 ## Documentation
 
-- **[HOWDY-MANUAL.md](HOWDY-MANUAL.md)** — Complete setup guide, configuration, and troubleshooting
+- **[FAQ.md](FAQ.md)** — Setup questions, configuration, and troubleshooting
 - **[Wiki](../../wiki)** — FAQ and additional notes
 
 ## Troubleshooting
@@ -141,7 +146,7 @@ Run the diagnostic:
 sudo ./install-howdy.sh --diagnose
 ```
 
-This checks: howdy installation, dlib module, IR camera, GDM permissions, SELinux policy, PAM configuration, face recognition models, and registered face models.
+This checks: howdy installation, dlib module, IR camera, GDM permissions, SELinux policy, PAM configuration, face recognition models, registered face models, and (if set up) keyring auto-unlock.
 
 For most issues, the auto-fixer handles it:
 
@@ -155,7 +160,7 @@ If GDM lock screen was fixed, restart GDM (open a TTY with Ctrl+Alt+F3 first):
 sudo systemctl restart gdm
 ```
 
-See [HOWDY-MANUAL.md](HOWDY-MANUAL.md) for detailed troubleshooting.
+See [FAQ.md](FAQ.md) for detailed troubleshooting.
 
 ## How It Works
 
@@ -223,6 +228,20 @@ For best accuracy, **register more than one face model**. A single model capture
 - **Slight head-angle variations** (straight, slightly left, slightly right)
 
 Three or more enrolled models lets you drop the scan timeout to ~8s (option 7 / `--set-timeout 8`) because a match is typically found in the first few frames. With a single model, keep the default 12s timeout.
+
+## Optional: unlock the login keyring after a face login
+
+A face login never sees your password, so GNOME can't unlock your login keyring and asks for it with an "Unlock Login Keyring" prompt once you're in. To stop that:
+
+```bash
+sudo ./install-howdy.sh --setup-keyring
+```
+
+This changes your login keyring to a random password and seals it with `systemd-creds` to this machine's TPM (plus the host key) and to your user account. A user service (`howdy-keyring-unlock.service`) unseals it at each graphical login and unlocks the keyring. Your login password is never stored, so the sealed secret can't be used for `sudo`, and changing your login password later doesn't break anything.
+
+Setup prints a **recovery password**. Keep it somewhere other than this keyring. You only need it if the sealed copy is lost (TPM cleared, OS reinstalled). `sudo ./install-howdy.sh --remove-keyring` undoes the setup and lets you set the keyring password back to your login password.
+
+Trade-off: the keyring is unlocked at every login, face or password, the same as after a password login today.
 
 ## Credits
 

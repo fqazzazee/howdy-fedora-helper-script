@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-09-24 — Audit fixes, keyring auto-unlock
+
+### Added
+
+- **Keyring auto-unlock** (`--setup-keyring`, `--remove-keyring`, menu option 9). A face login never sees your password, so GNOME used to prompt "Unlock Login Keyring" after logging in. Setup changes the login keyring to a random password, seals it with `systemd-creds encrypt --user` (TPM2 + host key, scoped to your user), and installs `howdy-keyring-unlock.service`, a user unit that unseals the password and unlocks the keyring before the session starts. It uses gnome-keyring's D-Bus `UnlockWithMasterPassword`, because `gnome-keyring-daemon --unlock` exits 0 without unlocking an already-running daemon. The login password is never stored. Setup prints a recovery password, and removal resets the keyring password
+- New helper `keyring/howdy-keyring` (installed to `/usr/libexec/howdy-keyring`)
+- Diagnostic check 9: keyring helper, unit, and whether the sealed password still unseals
+- The `howdy-auth` wrapper now enforces `disabled`, `ignore_ssh`, and `ignore_closed_lid` (upstream only checks them in `pam.py`, which `pam_exec` never runs). SSH is detected through `PAM_RHOST`, the calling process's environment, and the logind session's `Remote` flag
+- The wrapper allows one scan at a time (`flock`); a concurrent auth falls straight back to the password
+
+### Fixed
+
+- `--diagnose` exited after its first failed check: `((issues++))` returns status 1 when `issues` is 0, which trips `set -e`
+- `--test` and menu option 8 exited on a failed scan before showing the exit-code help (`output=$(…)` under `set -e`)
+- `--install` and `--fix` ended with "unbound variable" and exit 1: the `RETURN` traps in `install_howdy` and `fix_selinux` outlived their functions and fired again in the caller. The traps now clear themselves
+- Reinstalling deleted enrolled face models (`rm -rf` of the install dir). Models, `config.ini` (including a tuned timeout), its backup, snapshots, and dlib data are now carried over
+- `--fix` reset a timeout set with `--set-timeout` back to 12s. It now only resets values outside 4–18s
+- `--fix` appended missing config keys to the end of the file, which is the `[debug]` section. Keys now go under their own section
+- `su` ran a face scan before `pam_rootok`, so root waited for the camera on every `su`. The howdy line now goes after `pam_rootok`, and existing installs are migrated by `--fix`
+- A missing PAM file (e.g. no `gdm-fingerprint`) stopped the install under `set -e`
+- howdy is no longer added to `gdm-fingerprint` (GDM runs it in parallel with `gdm-password`, so two scans fought over the camera); `--fix` removes an existing line
+- The audit2allow fallback built a policy from *every* SELinux denial of the day; it now uses only the howdy/GDM-camera denials, in a temp dir
+- An updated `selinux/howdy_pam.te` was never loaded once any version was installed; the installed policy's hash is now tracked
+- `--tune-timeout` printed raw escape codes (`echo` without `-e`)
+- Messages pointed at `/etc/howdy/config.ini`; the config lives in `/usr/lib64/security/howdy/config.ini`
+
+### Changed
+
+- PAM edits render the whole file and commit only when it changes. This makes them idempotent, covers flag and position migrations, and takes a timestamped backup only when something changes
+- The two copies of the `howdy-auth` wrapper are now a single `write_auth_wrapper()`
+- `--fix` and `--setup-keyring` regenerate `/usr/local/bin/howdy-uninstall`. The uninstaller refuses to run while any user's keyring is still re-keyed, and removes the keyring unit and helper
+- `--setup-keyring` removes the unfinished keyring prototype files (`/usr/libexec/howdy-keyring-unlock`, `/usr/lib/systemd/user/howdy-keyring-unlock.service`) if present
+- Menu: 9 = Keyring unlock, 10 = Uninstall, 11 = Help
+- Docs: removed `sudo howdy test` (broken with the ffmpeg recorder) and links to the non-existent `HOWDY-MANUAL.md`
+
+---
+
 ## [1.2.3] - 2026-05-24 — Fix Test option for ffmpeg recorder
 
 ### Fixed
