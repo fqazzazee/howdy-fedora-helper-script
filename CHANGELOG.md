@@ -9,7 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Windows Hello-style scan messages.** "👀 Looking for you…" while scanning, "😊 Welcome back, <first name>!" on a match, using the name from the account instead of the face model's label. `sudo`/`su` animate on one line in the terminal: moving dots, a blink, and a wink on success. The wrapper draws these straight on the terminal, so they aren't relayed as PAM messages. Polkit dialogs animate the dots, since GNOME Shell's dialog replaces its message on every line (text agents get plain lines). GDM gets one line per step, because it keeps every message up for at least 2 s. There the greeting gets a second line naming the face model that matched and the scan time (`✅ Matched “glasses” in 1.8s`). It stays one message, because GDM holds every message for at least 2 s before it finishes the unlock. The line break is a U+2028 LINE SEPARATOR, which passes through `pam_exec`'s line splitting and which Pango renders as a new line
+- Failure messages now give the reason: `Couldn't recognize you` (timeout), `Too dark to see you`, `No face enrolled`, and `Face unlock isn't working` (compare.py error). The second, verbose `Howdy: …` line now goes only to the journal, which also records the scan time and, on errors, the end of compare.py's output
+- **Scan sounds** (`--sounds on|off`, off by default; the interactive install asks): a blip when a scan starts, a chime on a match, and a warning tone when it fails. The freedesktop theme sounds are set in `/etc/howdy/feedback.conf`. They play through `pw-play` for the active session on seat0 (you at the lock screen, the greeter at the login screen), detached so authentication never waits for them, and via `setpriv` rather than `runuser`, which would log a PAM session on every scan
+- `howdy-auth --demo OUTCOME` and `./install-howdy.sh --preview [OUTCOME]` play the messages with a simulated scan and no camera. A demo always exits 1, so it can't authenticate anyone
 - Face unlock for GDM 50's `gdm-switchable-auth` service, added only while authselect has its `switchable-auth` stack enabled (`sssd` profile with `with-switchable-auth`). Other profiles generate that stack as a stub that refuses all logins, and a `sufficient` howdy line in front of it would turn the disabled service into a working login. `--fix` adds the line when the stack becomes enabled and removes it if the stack is disabled again. `--check-pam` reports the state, and the uninstaller restores the file
+
+### Fixed
+
+- `--test`'s exit-code help listed 12 as "no face detected"; compare.py uses 12 for a missing username argument. The table now lists 1 (dlib data missing or Python error) instead
 
 ## [1.3.0] - 2026-09-24 — Audit fixes, keyring auto-unlock
 

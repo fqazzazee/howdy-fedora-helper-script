@@ -209,7 +209,7 @@ The installer downloads [Howdy](https://github.com/boltgolt/howdy) v2.6.1 and co
 
 **Key flags**
 - `sufficient` — success short-circuits the auth stack (no password); failure is silently ignored so the next module runs
-- `stdout` — `pam_exec.so` relays the wrapper's stdout to the calling application (sudo/GDM/polkit) so you see the "Recognized" / "Not recognized" message inline
+- `stdout` — `pam_exec.so` relays the wrapper's stdout to the calling application (sudo/GDM/polkit) so you see "Looking for you…" and the result inline
 - `quiet` — suppresses `pam_exec`'s own "command exited with status N" syslog noise (the wrapper logs its own structured messages via `logger -t howdy`)
 
 ### Fedora-specific handling
@@ -219,6 +219,33 @@ The script also handles things that aren't part of upstream howdy:
 - **GDM permissions**: adds `gdm` user to `video` group for camera access
 - **SELinux**: installs a policy allowing GDM to access video devices
 - **PAM file locations**: Fedora 44 ships `polkit-1` to `/usr/lib/pam.d/`; the installer copies it as a local override before editing
+
+## What you'll see
+
+Face unlock talks to you the way Windows Hello does: "👀 Looking for you…" while it scans, then "😊 Welcome back, <first name>!" or a short reason it couldn't unlock.
+
+| Where | How it looks |
+|---|---|
+| `sudo` / `su` in a terminal | Animated on one line: the dots move, the eyes blink, and a match ends with a wink (🙂 → 😉 → 😊) |
+| Polkit dialogs | The dots animate in place in the dialog |
+| GDM login and lock screen | One message per step, and the greeting gets a second line naming the face model that matched and the scan time (`✅ Matched “glasses” in 1.8s`). GDM keeps each message up for at least 2 seconds before it unlocks, so it can't animate |
+
+When face unlock fails, the message says why and asks for your password: `😕 Couldn't recognize you`, `🌑 Too dark to see you`, `🙈 No face enrolled`, or `⚠️ Face unlock isn't working`. The journal (`journalctl -t howdy`) gets the details: the matching model, the scan time, and compare.py's exit code and output.
+
+Face unlock can also play a sound when a scan starts, matches, and fails. The sounds come from the freedesktop sound theme and play for whoever is at the screen. They're off by default:
+
+```bash
+sudo ./install-howdy.sh --sounds on     # or off
+```
+
+To use different sounds, change `scan_sound`, `success_sound` and `fail_sound` in `/etc/howdy/feedback.conf`.
+
+To see (and hear) the messages without using the camera:
+
+```bash
+./install-howdy.sh --preview            # success, fail and too-dark
+./install-howdy.sh --preview noface     # one outcome
+```
 
 ## Recommended: register multiple face models
 
