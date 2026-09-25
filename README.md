@@ -46,6 +46,7 @@ Once configured, you can unlock your screen, authorize sudo commands, and authen
 | Service | Description |
 |---------|-------------|
 | GDM | GNOME login screen and lock screen |
+| GDM switchable auth | GDM 50+ `gdm-switchable-auth`, only when authselect enables its stack (SSSD `with-switchable-auth`) |
 | sudo | Terminal privilege escalation |
 | su | User switching |
 | Polkit | GUI password dialogs (Software Center, etc.) |

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Face unlock for GDM 50's `gdm-switchable-auth` service, added only while authselect has its `switchable-auth` stack enabled (`sssd` profile with `with-switchable-auth`). Other profiles generate that stack as a stub that refuses all logins, and a `sufficient` howdy line in front of it would turn the disabled service into a working login. `--fix` adds the line when the stack becomes enabled and removes it if the stack is disabled again. `--check-pam` reports the state, and the uninstaller restores the file
+
 ## [1.3.0] - 2026-09-24 — Audit fixes, keyring auto-unlock
 
 ### Added
