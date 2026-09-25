@@ -1,0 +1,158 @@
+#!/usr/bin/python3
+"""Unlock or re-key the GNOME login keyring for Howdy face logins.
+
+A face login never sees your password, so pam_gnome_keyring has nothing to
+unlock the login keyring with and GNOME prompts for it later. install-howdy.sh
+--setup-keyring changes the login keyring to a random password and seals that
+password with systemd-creds (TPM2 + host key, scoped to your user). At each
+graphical login the howdy-keyring-unlock user service runs `howdy-keyring
+unlock`, which unseals it and unlocks the keyring over gnome-keyring's D-Bus
+interface. Your login password is never stored.
+
+Runs as the keyring's owner, on their session bus.
+
+  howdy-keyring unlock   unseal the password and unlock the login keyring
+  howdy-keyring change   re-key the login keyring; stdin: OLD NUL NEW
+  howdy-keyring lock     lock the login keyring (used by setup's self-test)
+  howdy-keyring status   print "locked" or "unlocked"
+"""
+
+import os
+import subprocess
+import sys
+
+from gi.repository import Gio, GLib
+
+BUS_NAME = "org.freedesktop.secrets"
+SERVICE_PATH = "/org/freedesktop/secrets"
+LOGIN_PATH = "/org/freedesktop/secrets/collection/login"
+SERVICE_IFACE = "org.freedesktop.Secret.Service"
+COLLECTION_IFACE = "org.freedesktop.Secret.Collection"
+# gnome-keyring's private interface: the only way to hand it a password
+# without going through the interactive prompt
+INTERNAL_IFACE = "org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface"
+
+CRED_NAME = "howdy-keyring"
+CRED_PATH = os.path.expanduser("~/.local/share/howdy/keyring.cred")
+CALL_TIMEOUT_MS = 15000
+
+
+def log(msg):
+    print(f"howdy-keyring: {msg}", file=sys.stderr)
+
+
+class Keyring:
+    def __init__(self):
+        self.bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+        self._session = None
+
+    def call(self, path, iface, method, args, reply):
+        return self.bus.call_sync(
+            BUS_NAME, path, iface, method, args,
+            GLib.VariantType(reply), Gio.DBusCallFlags.NONE, CALL_TIMEOUT_MS, None,
+        ).unpack()
+
+    def secret(self, password):
+        # "plain" sessions carry the secret unencrypted over the private
+        # session bus, which only this user can connect to
+        if self._session is None:
+            _, self._session = self.call(
+                SERVICE_PATH, SERVICE_IFACE, "OpenSession",
+                GLib.Variant("(sv)", ("plain", GLib.Variant("s", ""))), "(vo)",
+            )
+        return (self._session, b"", password, "text/plain")
+
+    def locked(self):
+        (value,) = self.call(
+            LOGIN_PATH, "org.freedesktop.DBus.Properties", "Get",
+            GLib.Variant("(ss)", (COLLECTION_IFACE, "Locked")), "(v)",
+        )
+        return bool(value)
+
+    def unlock(self, password):
+        self.call(
+            SERVICE_PATH, INTERNAL_IFACE, "UnlockWithMasterPassword",
+            GLib.Variant("(o(oayays))", (LOGIN_PATH, self.secret(password))), "()",
+        )
+
+    def change(self, old, new):
+        self.call(
+            SERVICE_PATH, INTERNAL_IFACE, "ChangeWithMasterPassword",
+            GLib.Variant("(o(oayays)(oayays))",
+                         (LOGIN_PATH, self.secret(old), self.secret(new))), "()",
+        )
+
+    def lock(self):
+        self.call(
+            SERVICE_PATH, SERVICE_IFACE, "Lock",
+            GLib.Variant("(ao)", ([LOGIN_PATH],)), "(aoo)",
+        )
+
+
+def unseal():
+    result = subprocess.run(
+        ["systemd-creds", "decrypt", "--user", f"--name={CRED_NAME}", CRED_PATH, "-"],
+        capture_output=True, check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "could not unseal the keyring password "
+            f"({result.stderr.decode(errors='replace').strip() or 'systemd-creds failed'})"
+        )
+    return result.stdout
+
+
+def cmd_unlock(keyring):
+    if not os.path.exists(CRED_PATH):
+        log(f"no sealed password at {CRED_PATH} — run: sudo install-howdy.sh --setup-keyring")
+        return 1
+    if not keyring.locked():
+        log("login keyring already unlocked")
+        return 0
+    keyring.unlock(unseal())
+    if keyring.locked():
+        log("unlock reported success but the login keyring is still locked")
+        return 1
+    log("login keyring unlocked")
+    return 0
+
+
+def cmd_change(keyring):
+    data = sys.stdin.buffer.read()
+    if data.count(b"\0") != 1:
+        log("change expects OLD NUL NEW on stdin")
+        return 2
+    old, new = data.split(b"\0")
+    if not new:
+        log("refusing to set an empty keyring password")
+        return 2
+    keyring.change(old, new)
+    return 0
+
+
+def main(argv):
+    if len(argv) != 2 or argv[1] not in ("unlock", "change", "lock", "status"):
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    try:
+        keyring = Keyring()
+        if argv[1] == "unlock":
+            return cmd_unlock(keyring)
+        if argv[1] == "change":
+            return cmd_change(keyring)
+        if argv[1] == "lock":
+            keyring.lock()
+            return 0
+        print("locked" if keyring.locked() else "unlocked")
+        return 0
+    except GLib.Error as e:
+        # e.g. org.gnome.keyring.Error.Denied: The password was invalid
+        log(e.message)
+        return 1
+    except RuntimeError as e:
+        log(str(e))
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
