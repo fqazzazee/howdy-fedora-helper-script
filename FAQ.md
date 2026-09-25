@@ -136,6 +136,12 @@ It gives the login keyring a random password, seals it with the TPM, and unlocks
 
 Yes. The keyring's random password doesn't depend on your login password, so nothing needs updating.
 
+### What about GDM's `gdm-switchable-auth` service?
+
+GDM 50 ships `gdm-switchable-auth`, a single PAM service that offers several login methods (SSSD passkey and web login). It only does anything when authselect's `sssd` profile has `with-switchable-auth` enabled. Every other setup, including the default `local` profile, makes its stack refuse all logins, and GDM doesn't use it.
+
+The installer adds howdy to `gdm-switchable-auth` only while that stack is enabled. A `sufficient` howdy line in front of the disabled stub would turn a service that authselect switched off into a working login. If you enable switchable auth later, run `sudo ./install-howdy.sh --fix` to add howdy. If you disable it again, `--fix` removes the line.
+
 ### Does this work with fingerprint readers?
 
 Yes, they're independent. You can have both howdy (face) and fprintd (fingerprint) configured. The installer puts howdy only in `gdm-password`, not `gdm-fingerprint`: GDM runs both at the same time, and two face scans would fight over the camera.

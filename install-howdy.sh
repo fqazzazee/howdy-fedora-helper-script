@@ -58,6 +58,11 @@ TIMEOUT_DEFAULT=12
 PAM_LINE="auth        sufficient    pam_exec.so quiet stdout ${HOWDY_INSTALL_DIR}/howdy-auth"
 HOWDY_PAM_RE="pam_exec.*howdy-auth"
 
+# GDM 50+ switchable authentication: gdm-switchable-auth includes the
+# authselect-generated switchable-auth stack
+GDM_SWITCHABLE_PAM=/etc/pam.d/gdm-switchable-auth
+SWITCHABLE_STACK_PAM=/etc/pam.d/switchable-auth
+
 # Keyring auto-unlock (--setup-keyring)
 KEYRING_HELPER=/usr/libexec/howdy-keyring
 KEYRING_UNIT=howdy-keyring-unlock.service
@@ -799,6 +804,17 @@ polkit_pam_file() {
     return 0
 }
 
+# GDM 50+ ships gdm-switchable-auth: one PAM service offering several login
+# mechanisms (SSSD passkey / web login, via authselect's with-switchable-auth).
+# Every other authselect setup generates its stack as a stub that refuses all
+# logins (pam_debug auth=authinfo_unavail). A `sufficient` howdy line in front
+# of that stub would quietly turn a disabled service into a working login, so
+# howdy goes into gdm-switchable-auth only while the stack is live.
+switchable_auth_enabled() {
+    [[ -f "$GDM_SWITCHABLE_PAM" && -f "$SWITCHABLE_STACK_PAM" ]] || return 1
+    ! grep -qE "^[[:space:]]*auth[[:space:]].*pam_debug\.so.*auth=authinfo_unavail" "$SWITCHABLE_STACK_PAM"
+}
+
 # Every PAM change configure_pam would make, without making it
 pam_config_needs_fix() {
     local f
@@ -809,6 +825,11 @@ pam_config_needs_fix() {
     if [[ "${DM_TYPE:-}" == "gdm" ]]; then
         pam_needs_update /etc/pam.d/gdm-password && return 0
         grep -qsE "$HOWDY_PAM_RE" /etc/pam.d/gdm-fingerprint && return 0
+        if switchable_auth_enabled; then
+            pam_needs_update "$GDM_SWITCHABLE_PAM" && return 0
+        else
+            grep -qsE "$HOWDY_PAM_RE" "$GDM_SWITCHABLE_PAM" && return 0
+        fi
     fi
     return 1
 }
@@ -833,6 +854,15 @@ configure_pam() {
         # howdy line in both starts two scans that fight over the camera
         remove_howdy_from_pam "/etc/pam.d/gdm-fingerprint" "GDM fingerprint" \
             "it runs in parallel with gdm-password"
+        # See switchable_auth_enabled. If GDM ever runs it alongside
+        # gdm-password, howdy-auth's lock lets only one scan use the camera.
+        if switchable_auth_enabled; then
+            add_howdy_to_pam "$GDM_SWITCHABLE_PAM" "GDM switchable auth" || failures=$((failures + 1))
+        elif [[ -f "$GDM_SWITCHABLE_PAM" ]]; then
+            remove_howdy_from_pam "$GDM_SWITCHABLE_PAM" "GDM switchable auth" \
+                "authselect has its stack disabled"
+            info "GDM switchable auth: stack disabled by authselect — skipped (nothing uses it)"
+        fi
     fi
 
     # Shell access
@@ -1453,6 +1483,7 @@ check_pam() {
     local pam_files=(
         "/etc/pam.d/gdm-password:GDM login/unlock"
         "/etc/pam.d/gdm-fingerprint:GDM fingerprint"
+        "${GDM_SWITCHABLE_PAM}:GDM switchable auth"
         "/etc/pam.d/sudo:sudo"
         "/etc/pam.d/su:su"
         "/etc/pam.d/polkit-1:Polkit (polkit-1)"
@@ -1480,6 +1511,15 @@ check_pam() {
                 echo -e "  ${YELLOW}⚠${NC} $label: has howdy — runs in parallel with gdm-password and fights over the camera; run --fix"
             else
                 echo -e "  ${GREEN}✓${NC} $label: no howdy line (intended — gdm-password handles face unlock)"
+            fi
+            continue
+        fi
+
+        if [[ "$file" == "$GDM_SWITCHABLE_PAM" ]] && ! switchable_auth_enabled; then
+            if grep -qE "$HOWDY_PAM_RE" "$effective_file"; then
+                echo -e "  ${YELLOW}⚠${NC} $label: has howdy but authselect has the stack disabled — the line would enable it; run --fix"
+            else
+                echo -e "  ${GREEN}✓${NC} $label: stack disabled by authselect (not used) — howdy not added"
             fi
             continue
         fi
@@ -1883,6 +1923,7 @@ rm -f /etc/systemd/user/howdy-keyring-unlock.service /usr/libexec/howdy-keyring
 
 echo "Removing howdy from PAM files..."
 for pam_file in /etc/pam.d/gdm-password /etc/pam.d/gdm-fingerprint \
+                /etc/pam.d/gdm-switchable-auth \
                 /etc/pam.d/sudo /etc/pam.d/su \
                 /etc/pam.d/polkit-1 /etc/pam.d/polkit \
                 /etc/pam.d/system-auth; do
