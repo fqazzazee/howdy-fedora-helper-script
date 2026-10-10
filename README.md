@@ -9,6 +9,7 @@ Once configured, you can unlock your screen, authorize sudo commands, and authen
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Version](https://img.shields.io/badge/version-1.3.2-informational.svg)
 ![Desktop](https://img.shields.io/badge/desktop-GNOME%20%2F%20GDM-success.svg?logo=gnome)
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/fqazzazee)
 
 ### Fedora compatibility
 
@@ -279,6 +280,10 @@ This installer is a wrapper around **[Howdy](https://github.com/boltgolt/howdy)*
 - **dlib**: http://dlib.net/
 
 This installer script adds Fedora-specific automation, diagnostics, and fixes. It does not modify or redistribute Howdy's source code.
+
+## Support
+
+If it saved you an afternoon of PAM and SELinux debugging, you can [buy me a coffee ☕](https://buymeacoffee.com/fqazzazee).
 
 ## License
 
